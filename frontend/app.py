@@ -2,6 +2,7 @@ import os
 import streamlit as st
 import requests
 from PIL import Image
+
 # =========================
 # Page config
 # =========================
@@ -12,15 +13,18 @@ st.set_page_config(
 )
 
 # =========================
-# Helpers
+# Backend URL
 # =========================
-BACKEND_URL = os.getenv("BACKEND_URL", "")
+BACKEND_URL = os.getenv("BACKEND_URL", "").strip()
 if not BACKEND_URL:
     try:
-        BACKEND_URL = st.secrets["BACKEND_URL"]
+        BACKEND_URL = st.secrets["BACKEND_URL"].strip()
     except Exception:
         BACKEND_URL = "http://127.0.0.1:8000"
 
+# =========================
+# Helpers
+# =========================
 def format_percent(prob: float) -> str:
     percent = prob * 100
     if percent >= 99.995:
@@ -149,14 +153,14 @@ st.markdown(
     }
 
     .stButton > button {
-    width: 100%;
-    border-radius: 14px;
-    padding: 0.9rem;
-    font-weight: 700;
-    font-size: 1rem;
-    background: linear-gradient(135deg, #2563eb, #3b82f6);
-    color: white;
-    border: none;
+        width: 100%;
+        border-radius: 14px;
+        padding: 0.9rem;
+        font-weight: 700;
+        font-size: 1rem;
+        background: linear-gradient(135deg, #2563eb, #3b82f6);
+        color: white;
+        border: none;
     }
 
     div[data-testid="stFileUploader"] {
@@ -200,13 +204,12 @@ st.info(
 # =========================
 # Upload section
 # =========================
-with st.container():
-    st.markdown('<div class="panel">', unsafe_allow_html=True)
+st.markdown('<div class="panel">', unsafe_allow_html=True)
+st.markdown('<div class="section-title">Upload Image</div>', unsafe_allow_html=True)
+st.markdown('<div class="muted-text">Supported formats: JPG, JPEG, PNG</div>', unsafe_allow_html=True)
+st.caption("On free hosting, the backend may take around 30–60 seconds to wake up on the first request.")
 
-    st.markdown('<div class="section-title">Upload Image</div>', unsafe_allow_html=True)
-    st.markdown('<div class="muted-text">Supported formats: JPG, JPEG, PNG</div>', unsafe_allow_html=True)
-
-    uploaded_file = st.file_uploader(
+uploaded_file = st.file_uploader(
     "Choose an image file",
     type=["jpg", "jpeg", "png"],
     label_visibility="collapsed"
@@ -219,30 +222,21 @@ if uploaded_file is not None:
     image = Image.open(uploaded_file)
     st.session_state.uploaded_preview = image
 
-    # centered content area
-    outer_left, outer_center, outer_right = st.columns([1, 3, 1])
+    button_row = st.columns([1, 1, 1], gap="large")
+    with button_row[0]:
+        analyze = st.button("Analyze Image", use_container_width=True)
+    with button_row[2]:
+        reset = st.button("Reset", use_container_width=True)
 
-    with outer_center:
-        # button row
-        btn_left, btn_mid, btn_right = st.columns([1, 1.2, 1])
+    st.write("")
 
-        with btn_left:
-            analyze = st.button("Analyze Image", use_container_width=True)
-
-        with btn_right:
-            reset = st.button("Reset", use_container_width=True)
-
-        st.write("")
-
-        # centered image preview
-        img_left, img_center, img_right = st.columns([1, 3, 1])
-
-        with img_center:
-            st.image(
-                image,
-                caption="Image Preview",
-                width=300
-            )
+    preview_left, preview_center, preview_right = st.columns([1, 2, 1])
+    with preview_center:
+        st.image(
+            image,
+            caption="Image Preview",
+            width=300
+        )
 
 if reset:
     st.session_state.prediction_result = None
@@ -263,54 +257,31 @@ if analyze and uploaded_file is not None:
             response = requests.post(
                 f"{BACKEND_URL}/predict",
                 files=files,
-                timeout=120
+                timeout=180
             )
 
             if response.status_code == 200:
                 st.session_state.prediction_result = response.json()
                 st.success("Analysis completed successfully.")
             else:
+                st.session_state.prediction_result = None
                 st.error(f"API Error: {response.status_code}")
                 st.text(response.text)
 
         except requests.exceptions.ConnectionError:
-            st.error("Could not connect to backend. Please make sure the FastAPI server is running.")
+            st.session_state.prediction_result = None
+            st.error(
+                "Could not connect to backend. On free hosting, the backend may be asleep. "
+                "Wait a bit and try again."
+            )
         except requests.exceptions.Timeout:
+            st.session_state.prediction_result = None
             st.warning(
-                "The backend is waking up from sleep on the free server. "
-                "Please wait about 1 minute and click Analyze Image again.")
-        except Exception as e:
-            st.error(f"Something went wrong: {e}")
-
-if analyze and uploaded_file is not None:
-    with st.spinner("Analyzing image..."):
-        try:
-            files = {
-                "file": (
-                    uploaded_file.name,
-                    uploaded_file.getvalue(),
-                    uploaded_file.type
-                )
-            }
-
-            response = requests.post(
-                "http://127.0.0.1:8000/predict",
-                files=files,
-                timeout=60
+                "The backend is likely waking up from cold start. "
+                "Please wait about 30–60 seconds and click Analyze Image again."
             )
-
-            if response.status_code == 200:
-                st.session_state.prediction_result = response.json()
-                st.success("Analysis completed successfully.")
-            else:
-                st.error(f"API Error: {response.status_code}")
-                st.text(response.text)
-
-        except requests.exceptions.ConnectionError:
-            st.error("Could not connect to backend. Please make sure the FastAPI server is running.")
-        except requests.exceptions.Timeout:
-            st.error("Request timed out. Please try again.")
         except Exception as e:
+            st.session_state.prediction_result = None
             st.error(f"Something went wrong: {e}")
 
 st.markdown('</div>', unsafe_allow_html=True)
