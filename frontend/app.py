@@ -95,7 +95,7 @@ st.markdown(
 
     @media (prefers-color-scheme: light) {
         :root {
-            --page-shell: rgba(255, 255, 255, 0.60);
+            --page-shell: transparent;
             --card-bg: rgba(255, 255, 255, 0.82);
             --card-bg-strong: linear-gradient(135deg, rgba(255,255,255,0.94) 0%, rgba(240,249,255,0.92) 52%, rgba(238,242,255,0.90) 100%);
             --card-border: rgba(59, 130, 246, 0.12);
@@ -115,6 +115,7 @@ st.markdown(
             --heading-accent: #0f172a;
             --heading-sub: #475569;
             --progress-track: rgba(148, 163, 184, 0.22);
+            --shell-border: transparent;
         }
     }
 
@@ -148,20 +149,27 @@ st.markdown(
             --heading-accent: #f8fafc;
             --heading-sub: #cbd5e1;
             --progress-track: rgba(148, 163, 184, 0.18);
+            --shell-border: rgba(148, 163, 184, 0.1);
         }
     }
 
     .section-shell {
         position: relative;
         margin-top: var(--section-gap);
-        padding: 1.25rem;
+        padding: 0;
         border-radius: 32px;
         background: var(--page-shell);
-        border: 1px solid rgba(148, 163, 184, 0.1);
-        box-shadow: var(--shadow);
-        backdrop-filter: blur(18px);
-        -webkit-backdrop-filter: blur(18px);
-        overflow: hidden;
+        border: 1px solid var(--shell-border);
+    }
+
+    @media (prefers-color-scheme: dark) {
+        .section-shell {
+            padding: 1.25rem;
+            box-shadow: var(--shadow);
+            backdrop-filter: blur(18px);
+            -webkit-backdrop-filter: blur(18px);
+            overflow: hidden;
+        }
     }
 
     .section-shell + .section-shell {
@@ -255,16 +263,6 @@ st.markdown(
         border: 1px solid var(--card-border);
         font-size: 2rem;
         box-shadow: var(--shadow-soft);
-    }
-
-    .section-kicker {
-        color: #0ea5e9;
-        text-align: center;
-        font-size: 0.82rem;
-        font-weight: 800;
-        letter-spacing: 0.16em;
-        text-transform: uppercase;
-        margin-bottom: 0.75rem;
     }
 
     .section-heading {
@@ -383,6 +381,11 @@ st.markdown(
         overflow-x: auto;
     }
 
+    .tech-inner {
+        max-width: 820px;
+        margin: 0 auto;
+    }
+
     .preview-caption {
         color: var(--muted);
         text-align: center;
@@ -477,17 +480,33 @@ st.markdown(
         }
 
         .section-shell {
-            padding: 0.85rem;
+            padding: 0;
         }
 
         .hero-card,
         .main-card,
-        .result-card {
+        .result-card,
+        .tech-card {
             padding: 22px;
+        }
+
+        .mini-card {
+            padding: 18px;
+        }
+
+        .hero-mark {
+            width: 62px;
+            height: 62px;
         }
 
         .button-spacer {
             height: 0;
+        }
+    }
+
+    @media (max-width: 900px) and (prefers-color-scheme: dark) {
+        .section-shell {
+            padding: 0.85rem;
         }
     }
     </style>
@@ -515,17 +534,8 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-st.info(
-    "This tool is for educational and screening purposes only. "
-    "It is not a confirmed medical diagnosis."
-)
-
 st.markdown('<div class="section-shell">', unsafe_allow_html=True)
 
-# =========================
-# Section 2: Upload
-# =========================
-st.markdown('<div class="section-kicker">Section 02</div>', unsafe_allow_html=True)
 st.markdown('<div class="section-heading">Upload Image</div>', unsafe_allow_html=True)
 st.markdown('<div class="section-subtext">Supported formats: JPG, JPEG, PNG</div>', unsafe_allow_html=True)
 st.markdown('<div class="section-subtext">On free hosting, the backend may take around 30-60 seconds to wake up on the first request.</div>', unsafe_allow_html=True)
@@ -661,9 +671,6 @@ st.markdown('</div>', unsafe_allow_html=True)
 if st.session_state.error_message:
     st.warning(st.session_state.error_message)
 
-# =========================
-# Section 3: Screening Result
-# =========================
 st.markdown('<div class="section-shell">', unsafe_allow_html=True)
 st.markdown('<div id="screening-result-anchor" class="section-anchor"></div>', unsafe_allow_html=True)
 
@@ -684,7 +691,6 @@ if st.session_state.show_result and st.session_state.prediction_result is not No
         "High Risk": "rgba(239,68,68,0.16)"
     }.get(risk_level, "rgba(148,163,184,0.16)")
 
-    st.markdown('<div class="section-kicker">Section 03</div>', unsafe_allow_html=True)
     st.markdown('<div class="section-heading">Screening Result</div>', unsafe_allow_html=True)
 
     st.markdown(
@@ -752,14 +758,15 @@ Recommendation: {recommendation}"""
     st.markdown(
         f"""
         <div class="tech-card">
-            <div class="tech-title">Technical Output</div>
-            <div class="tech-code">{result_text}</div>
+            <div class="tech-inner">
+                <div class="tech-title">Technical Output</div>
+                <div class="tech-code">{result_text}</div>
+            </div>
         </div>
         """,
         unsafe_allow_html=True
     )
 else:
-    st.markdown('<div class="section-kicker">Section 03</div>', unsafe_allow_html=True)
     st.markdown('<div class="section-heading">Screening Result</div>', unsafe_allow_html=True)
     st.markdown(
         """
@@ -798,6 +805,8 @@ st.markdown(
     """
     <div class="footer-note">
         Built for AI-assisted skin lesion screening research and demonstration.
+        <br><br>
+        <strong>*</strong> This tool is for educational and screening purposes only. It is not a confirmed medical diagnosis.
     </div>
     """,
     unsafe_allow_html=True
