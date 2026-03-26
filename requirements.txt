@@ -7,3 +7,5 @@ opencv-python
 fastapi
 uvicorn
 streamlit
+requests
+python-multipart

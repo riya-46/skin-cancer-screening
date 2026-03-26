@@ -1,7 +1,7 @@
+import os
 import streamlit as st
 import requests
 from PIL import Image
-
 # =========================
 # Page config
 # =========================
@@ -14,6 +14,13 @@ st.set_page_config(
 # =========================
 # Helpers
 # =========================
+BACKEND_URL = os.getenv("BACKEND_URL", "")
+if not BACKEND_URL:
+    try:
+        BACKEND_URL = st.secrets["BACKEND_URL"]
+    except Exception:
+        BACKEND_URL = "http://127.0.0.1:8000"
+
 def format_percent(prob: float) -> str:
     percent = prob * 100
     if percent >= 99.995:
@@ -254,7 +261,7 @@ if analyze and uploaded_file is not None:
             }
 
             response = requests.post(
-                "http://127.0.0.1:8000/predict",
+                f"{BACKEND_URL}/predict",
                 files=files,
                 timeout=60
             )
