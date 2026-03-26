@@ -1,6 +1,7 @@
 import os
-import streamlit as st
+import time
 import requests
+import streamlit as st
 from PIL import Image
 
 # =========================
@@ -41,137 +42,6 @@ def get_risk_color(risk_level: str) -> str:
     return "#ef4444"
 
 # =========================
-# Styling
-# =========================
-st.markdown(
-    """
-    <style>
-    .block-container {
-        max-width: 820px;
-        padding-top: 1.5rem;
-        padding-bottom: 2rem;
-    }
-
-    .hero {
-        background: linear-gradient(135deg, #111827 0%, #0f172a 50%, #1e293b 100%);
-        border: 1px solid rgba(148,163,184,0.18);
-        border-radius: 24px;
-        padding: 26px 24px;
-        margin-bottom: 20px;
-        box-shadow: 0 12px 35px rgba(0,0,0,0.28);
-    }
-
-    .hero-title {
-        font-size: 2rem;
-        font-weight: 800;
-        margin-bottom: 8px;
-        line-height: 1.2;
-    }
-
-    .hero-subtitle {
-        color: #cbd5e1;
-        font-size: 1rem;
-        line-height: 1.7;
-    }
-
-    .panel {
-        background: rgba(15, 23, 42, 0.94);
-        border: 1px solid rgba(148,163,184,0.14);
-        border-radius: 22px;
-        padding: 22px;
-        box-shadow: 0 8px 28px rgba(0,0,0,0.22);
-        margin-bottom: 18px;
-    }
-
-    .section-title {
-        font-size: 1.5rem;
-        font-weight: 750;
-        margin-bottom: 0.8rem;
-    }
-
-    .muted-text {
-        color: #94a3b8;
-        font-size: 0.95rem;
-        margin-bottom: 0.5rem;
-    }
-
-    .result-card {
-        background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
-        border: 1px solid rgba(148,163,184,0.16);
-        border-radius: 22px;
-        padding: 24px;
-        box-shadow: 0 10px 30px rgba(0,0,0,0.22);
-        margin-bottom: 1rem;
-    }
-
-    .result-title {
-        font-size: 2rem;
-        font-weight: 800;
-        margin-bottom: 0.8rem;
-    }
-
-    .result-line {
-        font-size: 1.05rem;
-        margin-bottom: 0.7rem;
-    }
-
-    .badge {
-        display: inline-block;
-        padding: 0.35rem 0.8rem;
-        border-radius: 999px;
-        font-size: 0.9rem;
-        font-weight: 700;
-        margin-left: 0.4rem;
-    }
-
-    .mini-card {
-        background: rgba(17, 24, 39, 0.92);
-        border: 1px solid rgba(148,163,184,0.12);
-        border-radius: 18px;
-        padding: 18px;
-        text-align: left;
-        min-height: 110px;
-    }
-
-    .mini-label {
-        color: #94a3b8;
-        font-size: 0.95rem;
-        margin-bottom: 0.4rem;
-    }
-
-    .mini-value {
-        font-size: 1.9rem;
-        font-weight: 800;
-        line-height: 1.2;
-    }
-
-    .footer-note {
-        text-align: center;
-        color: #94a3b8;
-        font-size: 0.95rem;
-        margin-top: 2rem;
-    }
-
-    .stButton > button {
-        width: 100%;
-        border-radius: 14px;
-        padding: 0.9rem;
-        font-weight: 700;
-        font-size: 1rem;
-        background: linear-gradient(135deg, #2563eb, #3b82f6);
-        color: white;
-        border: none;
-    }
-
-    div[data-testid="stFileUploader"] {
-        border-radius: 16px;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-
-# =========================
 # Session state
 # =========================
 if "prediction_result" not in st.session_state:
@@ -180,13 +50,199 @@ if "prediction_result" not in st.session_state:
 if "uploaded_preview" not in st.session_state:
     st.session_state.uploaded_preview = None
 
+if "error_message" not in st.session_state:
+    st.session_state.error_message = None
+
 # =========================
-# Hero section
+# Styling
 # =========================
 st.markdown(
     """
-    <div class="hero">
-        <div class="hero-title">🩺 Skin Cancer Screening System</div>
+    <style>
+    .block-container {
+        max-width: 980px;
+        padding-top: 1.2rem;
+        padding-bottom: 2rem;
+    }
+
+    .center-title {
+        text-align: center;
+        font-weight: 800;
+        line-height: 1.2;
+        margin-bottom: 0.35rem;
+    }
+
+    .hero-title {
+        font-size: 2.6rem;
+    }
+
+    .section-title {
+        text-align: center;
+        font-size: 2rem;
+        font-weight: 750;
+        margin-top: 0.3rem;
+        margin-bottom: 1rem;
+    }
+
+    .hero-subtitle {
+        text-align: center;
+        font-size: 1.02rem;
+        line-height: 1.7;
+        opacity: 0.88;
+        margin-bottom: 0.4rem;
+    }
+
+    .glass-card {
+        border-radius: 24px;
+        padding: 26px 24px;
+        margin-bottom: 22px;
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+        box-shadow: 0 8px 30px rgba(0,0,0,0.14);
+    }
+
+    .subtle-text {
+        text-align: center;
+        font-size: 0.96rem;
+        opacity: 0.78;
+        margin-bottom: 0.7rem;
+    }
+
+    .preview-caption {
+        text-align: center;
+        font-size: 0.95rem;
+        opacity: 0.75;
+        margin-top: 0.35rem;
+    }
+
+    .result-card {
+        border-radius: 22px;
+        padding: 24px;
+        margin-bottom: 18px;
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+        box-shadow: 0 8px 28px rgba(0,0,0,0.14);
+    }
+
+    .result-title {
+        font-size: 2rem;
+        font-weight: 800;
+        margin-bottom: 0.9rem;
+    }
+
+    .result-line {
+        font-size: 1.05rem;
+        margin-bottom: 0.7rem;
+    }
+
+    .risk-badge {
+        display: inline-block;
+        padding: 0.36rem 0.85rem;
+        border-radius: 999px;
+        font-size: 0.9rem;
+        font-weight: 700;
+        margin-left: 0.35rem;
+    }
+
+    .mini-card {
+        border-radius: 18px;
+        padding: 18px;
+        min-height: 115px;
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+    }
+
+    .mini-label {
+        font-size: 0.95rem;
+        opacity: 0.8;
+        margin-bottom: 0.45rem;
+    }
+
+    .mini-value {
+        font-size: 2rem;
+        font-weight: 800;
+        line-height: 1.2;
+    }
+
+    .footer-note {
+        text-align: center;
+        font-size: 0.95rem;
+        opacity: 0.72;
+        margin-top: 2rem;
+    }
+
+    .stButton > button {
+        width: 100%;
+        border-radius: 16px;
+        padding: 0.85rem 1rem;
+        font-weight: 700;
+        font-size: 1rem;
+        border: none;
+        transition: all 0.2s ease-in-out;
+    }
+
+    .stButton > button:hover {
+        transform: translateY(-1px);
+    }
+
+    div[data-testid="stFileUploader"] {
+        border-radius: 16px;
+    }
+
+    /* LIGHT MODE */
+    @media (prefers-color-scheme: light) {
+        .glass-card, .result-card, .mini-card {
+            background: rgba(255, 255, 255, 0.62);
+            border: 1px solid rgba(15, 23, 42, 0.08);
+        }
+
+        .hero-title, .section-title, .result-title {
+            color: #0f172a;
+        }
+
+        .hero-subtitle, .subtle-text, .preview-caption, .footer-note,
+        .mini-label, .result-line {
+            color: #334155;
+        }
+
+        .stButton > button {
+            background: linear-gradient(135deg, #2563eb, #3b82f6);
+            color: white;
+            box-shadow: 0 6px 20px rgba(37, 99, 235, 0.22);
+        }
+    }
+
+    /* DARK MODE */
+    @media (prefers-color-scheme: dark) {
+        .glass-card, .result-card, .mini-card {
+            background: rgba(15, 23, 42, 0.70);
+            border: 1px solid rgba(148, 163, 184, 0.16);
+        }
+
+        .hero-title, .section-title, .result-title,
+        .hero-subtitle, .subtle-text, .preview-caption, .footer-note,
+        .mini-label, .result-line {
+            color: #e5e7eb;
+        }
+
+        .stButton > button {
+            background: linear-gradient(135deg, #2563eb, #3b82f6);
+            color: white;
+            box-shadow: 0 8px 24px rgba(59, 130, 246, 0.22);
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+# =========================
+# Section 1: Header
+# =========================
+st.markdown(
+    """
+    <div class="glass-card">
+        <div class="center-title hero-title">🩺 Skin Cancer Screening System</div>
         <div class="hero-subtitle">
             Upload a skin lesion image and receive an AI-based screening result with
             prediction confidence, risk level, and recommendation.
@@ -201,13 +257,20 @@ st.info(
     "It is not a confirmed medical diagnosis."
 )
 
+st.write("")
+
 # =========================
-# Upload section
+# Section 2: Upload
 # =========================
-st.markdown('<div class="panel">', unsafe_allow_html=True)
-st.markdown('<div class="section-title">Upload Image</div>', unsafe_allow_html=True)
-st.markdown('<div class="muted-text">Supported formats: JPG, JPEG, PNG</div>', unsafe_allow_html=True)
-st.caption("On free hosting, the backend may take around 30–60 seconds to wake up on the first request.")
+st.markdown('<div class="center-title section-title">Upload Image</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="subtle-text">Supported formats: JPG, JPEG, PNG</div>',
+    unsafe_allow_html=True
+)
+st.markdown(
+    '<div class="subtle-text">On free hosting, the backend may take around 30–60 seconds to wake up on the first request.</div>',
+    unsafe_allow_html=True
+)
 
 uploaded_file = st.file_uploader(
     "Choose an image file",
@@ -222,76 +285,105 @@ if uploaded_file is not None:
     image = Image.open(uploaded_file)
     st.session_state.uploaded_preview = image
 
-    button_row = st.columns([1, 1, 1], gap="large")
-    with button_row[0]:
+    action_left, action_center, action_right = st.columns([1.2, 2.2, 1.2], gap="large")
+
+    with action_left:
         analyze = st.button("Analyze Image", use_container_width=True)
-    with button_row[2]:
-        reset = st.button("Reset", use_container_width=True)
 
-    st.write("")
-
-    preview_left, preview_center, preview_right = st.columns([1, 2, 1])
-    with preview_center:
+    with action_center:
         st.image(
             image,
-            caption="Image Preview",
             width=300
         )
+        st.markdown('<div class="preview-caption">Image Preview</div>', unsafe_allow_html=True)
+
+    with action_right:
+        reset = st.button("Reset", use_container_width=True)
 
 if reset:
     st.session_state.prediction_result = None
     st.session_state.uploaded_preview = None
+    st.session_state.error_message = None
     st.rerun()
 
+# =========================
+# Analyze logic with AI scan effect
+# =========================
 if analyze and uploaded_file is not None:
-    with st.spinner("Analyzing image..."):
-        try:
-            files = {
-                "file": (
-                    uploaded_file.name,
-                    uploaded_file.getvalue(),
-                    uploaded_file.type
-                )
-            }
+    st.session_state.error_message = None
+    st.session_state.prediction_result = None
 
-            response = requests.post(
-                f"{BACKEND_URL}/predict",
-                files=files,
-                timeout=180
+    progress_text = st.empty()
+    progress_bar = st.progress(0)
+
+    scan_steps = [
+        "Initializing AI scanner...",
+        "Preprocessing uploaded image...",
+        "Extracting lesion features...",
+        "Running classification model...",
+        "Preparing screening result..."
+    ]
+
+    try:
+        for i, text in enumerate(scan_steps, start=1):
+            progress_text.info(text)
+            progress_bar.progress(i * 15)
+            time.sleep(0.35)
+
+        files = {
+            "file": (
+                uploaded_file.name,
+                uploaded_file.getvalue(),
+                uploaded_file.type
             )
+        }
 
-            if response.status_code == 200:
-                st.session_state.prediction_result = response.json()
-                st.success("Analysis completed successfully.")
-            else:
-                st.session_state.prediction_result = None
-                st.error(f"API Error: {response.status_code}")
-                st.text(response.text)
+        response = requests.post(
+            f"{BACKEND_URL}/predict",
+            files=files,
+            timeout=180
+        )
 
-        except requests.exceptions.ConnectionError:
-            st.session_state.prediction_result = None
-            st.error(
-                "Could not connect to backend. On free hosting, the backend may be asleep. "
-                "Wait a bit and try again."
-            )
-        except requests.exceptions.Timeout:
-            st.session_state.prediction_result = None
-            st.warning(
-                "The backend is likely waking up from cold start. "
-                "Please wait about 30–60 seconds and click Analyze Image again."
-            )
-        except Exception as e:
-            st.session_state.prediction_result = None
-            st.error(f"Something went wrong: {e}")
+        progress_bar.progress(100)
+        progress_text.success("Analysis completed successfully.")
 
-st.markdown('</div>', unsafe_allow_html=True)
+        if response.status_code == 200:
+            st.session_state.prediction_result = response.json()
+        else:
+            st.session_state.prediction_result = None
+            st.session_state.error_message = f"API Error: {response.status_code}"
+
+    except requests.exceptions.Timeout:
+        st.session_state.prediction_result = None
+        st.session_state.error_message = (
+            "The backend is likely waking up from cold start. "
+            "Please wait about 30–60 seconds and click Analyze Image again."
+        )
+    except requests.exceptions.ConnectionError:
+        st.session_state.prediction_result = None
+        st.session_state.error_message = (
+            "Could not connect to backend. On free hosting, the backend may be asleep. "
+            "Please wait a bit and try again."
+        )
+    except Exception as e:
+        st.session_state.prediction_result = None
+        st.session_state.error_message = f"Something went wrong: {e}"
 
 # =========================
-# Result section
+# Error message
+# =========================
+if st.session_state.error_message:
+    st.warning(st.session_state.error_message)
+
+# =========================
+# Section 3: Result
 # =========================
 result = st.session_state.prediction_result
 
 if result is not None:
+    st.write("")
+    st.markdown('<div class="center-title section-title">Screening Result</div>', unsafe_allow_html=True)
+
     predicted_class = result["predicted_class"]
     predicted_probability = result["predicted_probability"]
     benign_prob = result["benign_probability"]
@@ -306,8 +398,6 @@ if result is not None:
         "High Risk": "rgba(239,68,68,0.16)"
     }.get(risk_level, "rgba(148,163,184,0.16)")
 
-    st.markdown("## Screening Result")
-
     st.markdown(
         f"""
         <div class="result-card">
@@ -317,7 +407,7 @@ if result is not None:
             </div>
             <div class="result-line">
                 <strong>Risk Level:</strong>
-                <span class="badge" style="background:{badge_bg}; color:{risk_color}; border:1px solid {risk_color};">
+                <span class="risk-badge" style="background:{badge_bg}; color:{risk_color}; border:1px solid {risk_color};">
                     {risk_level}
                 </span>
             </div>
@@ -329,10 +419,11 @@ if result is not None:
         unsafe_allow_html=True
     )
 
-    st.markdown("### Detailed Probabilities")
-    col1, col2 = st.columns(2)
+    st.markdown('<div class="center-title" style="font-size:1.6rem; margin-bottom:1rem;">Detailed Probabilities</div>', unsafe_allow_html=True)
 
-    with col1:
+    p1, p2 = st.columns(2, gap="large")
+
+    with p1:
         st.markdown(
             f"""
             <div class="mini-card">
@@ -344,7 +435,7 @@ if result is not None:
         )
         st.progress(float(benign_prob))
 
-    with col2:
+    with p2:
         st.markdown(
             f"""
             <div class="mini-card">
