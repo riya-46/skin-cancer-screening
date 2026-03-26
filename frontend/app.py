@@ -57,6 +57,9 @@ if "show_result" not in st.session_state:
 if "scroll_to_result" not in st.session_state:
     st.session_state.scroll_to_result = False
 
+if "uploader_key" not in st.session_state:
+    st.session_state.uploader_key = 0
+
 # =========================
 # Styling
 # =========================
@@ -65,9 +68,10 @@ st.markdown(
     <style>
     [data-testid="stAppViewContainer"] {
         background:
-            radial-gradient(circle at top left, rgba(14, 165, 233, 0.18), transparent 28%),
-            radial-gradient(circle at top right, rgba(59, 130, 246, 0.14), transparent 24%),
-            linear-gradient(180deg, rgba(248, 250, 252, 0.96) 0%, rgba(226, 232, 240, 0.98) 100%);
+            radial-gradient(circle at 8% 10%, rgba(14, 165, 233, 0.16), transparent 24%),
+            radial-gradient(circle at 88% 8%, rgba(244, 114, 182, 0.14), transparent 20%),
+            radial-gradient(circle at 50% 38%, rgba(99, 102, 241, 0.10), transparent 28%),
+            linear-gradient(180deg, #fffaf5 0%, #f8fbff 42%, #eef6ff 100%);
     }
 
     [data-testid="stHeader"] {
@@ -84,50 +88,66 @@ st.markdown(
         --radius-xl: 30px;
         --radius-lg: 24px;
         --radius-md: 18px;
-        --shadow: 0 22px 60px rgba(15, 23, 42, 0.14);
+        --shadow: 0 24px 60px rgba(15, 23, 42, 0.12);
+        --shadow-soft: 0 16px 36px rgba(37, 99, 235, 0.12);
         --section-gap: 2.6rem;
     }
 
     @media (prefers-color-scheme: light) {
         :root {
-            --page-shell: rgba(255, 255, 255, 0.52);
-            --card-bg: rgba(255, 255, 255, 0.74);
-            --card-border: rgba(15, 23, 42, 0.09);
+            --page-shell: rgba(255, 255, 255, 0.60);
+            --card-bg: rgba(255, 255, 255, 0.82);
+            --card-bg-strong: linear-gradient(135deg, rgba(255,255,255,0.94) 0%, rgba(240,249,255,0.92) 52%, rgba(238,242,255,0.90) 100%);
+            --card-border: rgba(59, 130, 246, 0.12);
             --title: #0f172a;
             --text: #334155;
             --muted: #64748b;
             --soft: #eff6ff;
-            --accent: linear-gradient(135deg, #0284c7 0%, #2563eb 55%, #1d4ed8 100%);
-            --hero: linear-gradient(135deg, rgba(255,255,255,0.88) 0%, rgba(240,249,255,0.82) 100%);
-            --tech: rgba(248, 250, 252, 0.86);
-            --uploader-bg: rgba(241, 245, 249, 0.88);
-            --uploader-border: rgba(14, 165, 233, 0.22);
-            --input-chip: rgba(2, 132, 199, 0.08);
+            --accent: linear-gradient(135deg, #0ea5e9 0%, #2563eb 52%, #7c3aed 100%);
+            --accent-soft: linear-gradient(135deg, rgba(14,165,233,0.15) 0%, rgba(124,58,237,0.14) 100%);
+            --hero: linear-gradient(135deg, rgba(255,255,255,0.92) 0%, rgba(236, 253, 245, 0.82) 28%, rgba(239,246,255,0.90) 62%, rgba(245,243,255,0.88) 100%);
+            --hero-orb-1: rgba(14, 165, 233, 0.16);
+            --hero-orb-2: rgba(124, 58, 237, 0.14);
+            --tech: rgba(247, 250, 255, 0.94);
+            --uploader-bg: rgba(248, 250, 252, 0.92);
+            --uploader-border: rgba(14, 165, 233, 0.26);
+            --input-chip: rgba(14, 165, 233, 0.10);
+            --heading-accent: #0f172a;
+            --heading-sub: #475569;
+            --progress-track: rgba(148, 163, 184, 0.22);
         }
     }
 
     @media (prefers-color-scheme: dark) {
         [data-testid="stAppViewContainer"] {
             background:
-                radial-gradient(circle at top left, rgba(14, 165, 233, 0.14), transparent 24%),
-                radial-gradient(circle at top right, rgba(37, 99, 235, 0.16), transparent 24%),
-                linear-gradient(180deg, #020617 0%, #0f172a 58%, #111827 100%);
+                radial-gradient(circle at 8% 10%, rgba(14, 165, 233, 0.18), transparent 22%),
+                radial-gradient(circle at 88% 8%, rgba(99, 102, 241, 0.18), transparent 22%),
+                radial-gradient(circle at 48% 36%, rgba(168, 85, 247, 0.08), transparent 24%),
+                linear-gradient(180deg, #020617 0%, #0f172a 55%, #111827 100%);
         }
 
         :root {
             --page-shell: rgba(15, 23, 42, 0.46);
-            --card-bg: rgba(15, 23, 42, 0.78);
+            --card-bg: rgba(15, 23, 42, 0.80);
+            --card-bg-strong: linear-gradient(135deg, rgba(15,23,42,0.92) 0%, rgba(17,24,39,0.88) 100%);
             --card-border: rgba(148, 163, 184, 0.18);
             --title: #f8fafc;
             --text: #e2e8f0;
             --muted: #94a3b8;
             --soft: #0b1120;
-            --accent: linear-gradient(135deg, #0ea5e9 0%, #2563eb 50%, #1d4ed8 100%);
-            --hero: linear-gradient(135deg, rgba(15,23,42,0.92) 0%, rgba(17,24,39,0.84) 100%);
+            --accent: linear-gradient(135deg, #0ea5e9 0%, #2563eb 45%, #7c3aed 100%);
+            --accent-soft: linear-gradient(135deg, rgba(14,165,233,0.14) 0%, rgba(124,58,237,0.16) 100%);
+            --hero: linear-gradient(135deg, rgba(15,23,42,0.92) 0%, rgba(17,24,39,0.88) 100%);
+            --hero-orb-1: rgba(14, 165, 233, 0.14);
+            --hero-orb-2: rgba(124, 58, 237, 0.16);
             --tech: rgba(15, 23, 42, 0.88);
             --uploader-bg: rgba(15, 23, 42, 0.82);
             --uploader-border: rgba(56, 189, 248, 0.2);
             --input-chip: rgba(14, 165, 233, 0.12);
+            --heading-accent: #f8fafc;
+            --heading-sub: #cbd5e1;
+            --progress-track: rgba(148, 163, 184, 0.18);
         }
     }
 
@@ -141,6 +161,7 @@ st.markdown(
         box-shadow: var(--shadow);
         backdrop-filter: blur(18px);
         -webkit-backdrop-filter: blur(18px);
+        overflow: hidden;
     }
 
     .section-shell + .section-shell {
@@ -151,10 +172,43 @@ st.markdown(
         background: var(--hero);
         border: 1px solid var(--card-border);
         border-radius: var(--radius-xl);
-        padding: 42px 34px;
+        padding: 44px 34px;
         backdrop-filter: blur(18px);
         -webkit-backdrop-filter: blur(18px);
         text-align: center;
+        position: relative;
+        overflow: hidden;
+        box-shadow: var(--shadow-soft);
+    }
+
+    .hero-card::before,
+    .hero-card::after {
+        content: "";
+        position: absolute;
+        border-radius: 999px;
+        filter: blur(8px);
+        z-index: 0;
+    }
+
+    .hero-card::before {
+        width: 220px;
+        height: 220px;
+        background: var(--hero-orb-1);
+        top: -84px;
+        left: -42px;
+    }
+
+    .hero-card::after {
+        width: 260px;
+        height: 260px;
+        background: var(--hero-orb-2);
+        right: -72px;
+        bottom: -124px;
+    }
+
+    .hero-card > * {
+        position: relative;
+        z-index: 1;
     }
 
     .hero-title {
@@ -169,8 +223,8 @@ st.markdown(
     .hero-subtitle {
         color: var(--text);
         font-size: 1.05rem;
-        line-height: 1.85;
-        max-width: 760px;
+        line-height: 1.8;
+        max-width: 780px;
         margin: 0 auto;
     }
 
@@ -189,8 +243,32 @@ st.markdown(
         margin-bottom: 1rem;
     }
 
+    .hero-mark {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 72px;
+        height: 72px;
+        border-radius: 22px;
+        margin: 0 auto 1rem;
+        background: var(--accent-soft);
+        border: 1px solid var(--card-border);
+        font-size: 2rem;
+        box-shadow: var(--shadow-soft);
+    }
+
+    .section-kicker {
+        color: #0ea5e9;
+        text-align: center;
+        font-size: 0.82rem;
+        font-weight: 800;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        margin-bottom: 0.75rem;
+    }
+
     .section-heading {
-        color: var(--title);
+        color: var(--heading-accent);
         text-align: center;
         font-size: 2.2rem;
         font-weight: 800;
@@ -201,7 +279,7 @@ st.markdown(
     }
 
     .section-subtext {
-        color: var(--muted);
+        color: var(--heading-sub);
         text-align: center;
         font-size: 1rem;
         margin-bottom: 0.45rem;
@@ -215,23 +293,25 @@ st.markdown(
         backdrop-filter: blur(18px);
         -webkit-backdrop-filter: blur(18px);
         margin-top: 1.4rem;
+        box-shadow: var(--shadow-soft);
     }
 
     .result-card {
-        background: var(--card-bg);
+        background: var(--card-bg-strong);
         border: 1px solid var(--card-border);
         border-radius: var(--radius-xl);
         padding: 30px;
         backdrop-filter: blur(18px);
         -webkit-backdrop-filter: blur(18px);
         margin-bottom: 20px;
+        box-shadow: var(--shadow-soft);
     }
 
     .result-title {
         color: var(--title);
-        font-size: 2.4rem;
+        font-size: 2.6rem;
         font-weight: 800;
-        margin-bottom: 14px;
+        margin-bottom: 0.3rem;
         letter-spacing: -0.02em;
     }
 
@@ -253,14 +333,14 @@ st.markdown(
     }
 
     .mini-card {
-        background: var(--card-bg);
+        background: var(--card-bg-strong);
         border: 1px solid var(--card-border);
         border-radius: var(--radius-lg);
         padding: 22px;
         min-height: 132px;
         backdrop-filter: blur(16px);
         -webkit-backdrop-filter: blur(16px);
-        box-shadow: var(--shadow);
+        box-shadow: var(--shadow-soft);
     }
 
     .mini-label {
@@ -280,10 +360,11 @@ st.markdown(
         background: var(--tech);
         border: 1px solid var(--card-border);
         border-radius: var(--radius-lg);
-        padding: 22px;
+        padding: 24px;
         backdrop-filter: blur(16px);
         -webkit-backdrop-filter: blur(16px);
-        margin-top: 12px;
+        margin-top: 18px;
+        box-shadow: var(--shadow-soft);
     }
 
     .tech-title {
@@ -306,11 +387,22 @@ st.markdown(
         color: var(--muted);
         text-align: center;
         font-size: 0.95rem;
-        margin-top: 10px;
+        margin-top: 0.85rem;
+        font-weight: 600;
+    }
+
+    .button-spacer {
+        height: 2.4rem;
+    }
+
+    .progress-label {
+        color: var(--muted);
+        font-size: 0.92rem;
+        margin-top: 0.75rem;
     }
 
     .scan-box {
-        background: var(--card-bg);
+        background: var(--accent-soft);
         border: 1px solid var(--card-border);
         border-radius: 18px;
         padding: 18px;
@@ -334,34 +426,48 @@ st.markdown(
         border: none;
         background: var(--accent);
         color: white;
-        box-shadow: 0 12px 28px rgba(37, 99, 235, 0.24);
+        box-shadow: 0 16px 30px rgba(37, 99, 235, 0.24);
         transition: all 0.2s ease-in-out;
     }
 
     .stButton > button:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 16px 34px rgba(37, 99, 235, 0.28);
+        transform: translateY(-2px);
+        box-shadow: 0 20px 38px rgba(37, 99, 235, 0.28);
     }
 
     div[data-testid="stFileUploader"] {
         border: 1px dashed var(--uploader-border);
         border-radius: 24px;
         background: var(--uploader-bg);
-        padding: 0.6rem;
+        padding: 0.7rem;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.12);
     }
 
     div[data-testid="stImage"] img {
-        border-radius: 18px;
-        box-shadow: 0 14px 34px rgba(0,0,0,0.14);
+        border-radius: 22px;
+        box-shadow: 0 18px 36px rgba(15,23,42,0.18);
+        border: 1px solid var(--card-border);
     }
 
     div[data-testid="stAlert"] {
         border-radius: 18px;
     }
 
+    div[data-testid="stProgressBar"] > div > div {
+        background: var(--accent);
+    }
+
+    div[data-testid="stProgressBar"] > div {
+        background: var(--progress-track);
+    }
+
     .section-anchor {
         position: relative;
         top: -24px;
+    }
+
+    .result-grid-gap {
+        margin-top: 1rem;
     }
 
     @media (max-width: 900px) {
@@ -379,6 +485,10 @@ st.markdown(
         .result-card {
             padding: 22px;
         }
+
+        .button-spacer {
+            height: 0;
+        }
     }
     </style>
     """,
@@ -392,11 +502,12 @@ st.markdown(
     """
     <div class="section-shell">
     <div class="hero-card">
+        <div class="hero-mark">🩺</div>
         <div class="hero-strip">AI Dermatology Screening</div>
         <div class="hero-title">Skin Cancer Screening System</div>
         <div class="hero-subtitle">
-            Upload a skin lesion image and receive an AI-based screening result with
-            prediction confidence, risk level, and recommendation.
+            Upload a skin lesion image and receive a fast AI-assisted screening summary
+            with confidence score, risk level, and next-step recommendation.
         </div>
     </div>
     </div>
@@ -414,6 +525,7 @@ st.markdown('<div class="section-shell">', unsafe_allow_html=True)
 # =========================
 # Section 2: Upload
 # =========================
+st.markdown('<div class="section-kicker">Section 02</div>', unsafe_allow_html=True)
 st.markdown('<div class="section-heading">Upload Image</div>', unsafe_allow_html=True)
 st.markdown('<div class="section-subtext">Supported formats: JPG, JPEG, PNG</div>', unsafe_allow_html=True)
 st.markdown('<div class="section-subtext">On free hosting, the backend may take around 30-60 seconds to wake up on the first request.</div>', unsafe_allow_html=True)
@@ -423,7 +535,8 @@ st.markdown('<div class="main-card">', unsafe_allow_html=True)
 uploaded_file = st.file_uploader(
     "Choose an image file",
     type=["jpg", "jpeg", "png"],
-    label_visibility="collapsed"
+    label_visibility="collapsed",
+    key=f"uploader_{st.session_state.uploader_key}"
 )
 
 analyze = False
@@ -432,21 +545,18 @@ reset = False
 if uploaded_file is not None:
     image = Image.open(uploaded_file)
 
-    # Equal-distance 3-part layout
-    left_col, center_col, right_col = st.columns([1.2, 1.7, 1.2], gap="large")
+    left_col, center_col, right_col = st.columns([1.1, 1.35, 1.1], gap="medium")
 
     with left_col:
-        st.write("")
-        st.write("")
+        st.markdown('<div class="button-spacer"></div>', unsafe_allow_html=True)
         analyze = st.button("Analyze Image", use_container_width=True)
 
     with center_col:
-        st.image(image, width=320)
+        st.image(image, use_container_width=True)
         st.markdown('<div class="preview-caption">Image Preview</div>', unsafe_allow_html=True)
 
     with right_col:
-        st.write("")
-        st.write("")
+        st.markdown('<div class="button-spacer"></div>', unsafe_allow_html=True)
         reset = st.button("Reset", use_container_width=True)
 
 else:
@@ -458,6 +568,7 @@ if reset:
     st.session_state.error_message = None
     st.session_state.show_result = False
     st.session_state.scroll_to_result = False
+    st.session_state.uploader_key += 1
     st.rerun()
 
 # =========================
@@ -573,13 +684,14 @@ if st.session_state.show_result and st.session_state.prediction_result is not No
         "High Risk": "rgba(239,68,68,0.16)"
     }.get(risk_level, "rgba(148,163,184,0.16)")
 
-    st.write("")
+    st.markdown('<div class="section-kicker">Section 03</div>', unsafe_allow_html=True)
     st.markdown('<div class="section-heading">Screening Result</div>', unsafe_allow_html=True)
 
     st.markdown(
         f"""
         <div class="result-card">
             <div class="result-title">{predicted_class}</div>
+            <div class="section-subtext" style="text-align:left; margin-bottom:1.2rem;">AI-generated screening summary based on the uploaded lesion image.</div>
             <div class="result-line">
                 <strong>Prediction Confidence:</strong> {format_percent(predicted_probability)}
             </div>
@@ -612,6 +724,7 @@ if st.session_state.show_result and st.session_state.prediction_result is not No
             unsafe_allow_html=True
         )
         st.progress(float(benign_prob))
+        st.markdown(f'<div class="progress-label">Confidence share: {format_percent(benign_prob)}</div>', unsafe_allow_html=True)
 
     with prob_col2:
         st.markdown(
@@ -624,6 +737,7 @@ if st.session_state.show_result and st.session_state.prediction_result is not No
             unsafe_allow_html=True
         )
         st.progress(float(malignant_prob))
+        st.markdown(f'<div class="progress-label">Confidence share: {format_percent(malignant_prob)}</div>', unsafe_allow_html=True)
 
     # Technical Output always visible
     result_text = f"""===== Prediction Result =====
@@ -645,6 +759,7 @@ Recommendation: {recommendation}"""
         unsafe_allow_html=True
     )
 else:
+    st.markdown('<div class="section-kicker">Section 03</div>', unsafe_allow_html=True)
     st.markdown('<div class="section-heading">Screening Result</div>', unsafe_allow_html=True)
     st.markdown(
         """
