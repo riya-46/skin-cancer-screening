@@ -2,6 +2,7 @@ import os
 import time
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image
 
 # =========================
@@ -9,7 +10,7 @@ from PIL import Image
 # =========================
 st.set_page_config(
     page_title="Skin Cancer Screening",
-    page_icon="🩺",
+    page_icon=":stethoscope:",
     layout="wide"
 )
 
@@ -53,80 +54,139 @@ if "error_message" not in st.session_state:
 if "show_result" not in st.session_state:
     st.session_state.show_result = False
 
+if "scroll_to_result" not in st.session_state:
+    st.session_state.scroll_to_result = False
+
 # =========================
 # Styling
 # =========================
 st.markdown(
     """
     <style>
+    [data-testid="stAppViewContainer"] {
+        background:
+            radial-gradient(circle at top left, rgba(14, 165, 233, 0.18), transparent 28%),
+            radial-gradient(circle at top right, rgba(59, 130, 246, 0.14), transparent 24%),
+            linear-gradient(180deg, rgba(248, 250, 252, 0.96) 0%, rgba(226, 232, 240, 0.98) 100%);
+    }
+
+    [data-testid="stHeader"] {
+        background: transparent;
+    }
+
     .block-container {
         max-width: 1180px;
-        padding-top: 1.2rem;
-        padding-bottom: 2rem;
+        padding-top: 1.8rem;
+        padding-bottom: 3rem;
     }
 
     :root {
-        --radius-xl: 28px;
-        --radius-lg: 22px;
+        --radius-xl: 30px;
+        --radius-lg: 24px;
         --radius-md: 18px;
-        --shadow: 0 18px 40px rgba(0, 0, 0, 0.12);
+        --shadow: 0 22px 60px rgba(15, 23, 42, 0.14);
+        --section-gap: 2.6rem;
     }
 
     @media (prefers-color-scheme: light) {
         :root {
-            --card-bg: rgba(255, 255, 255, 0.62);
-            --card-border: rgba(15, 23, 42, 0.08);
+            --page-shell: rgba(255, 255, 255, 0.52);
+            --card-bg: rgba(255, 255, 255, 0.74);
+            --card-border: rgba(15, 23, 42, 0.09);
             --title: #0f172a;
             --text: #334155;
             --muted: #64748b;
-            --soft: #f8fafc;
-            --accent: linear-gradient(135deg, #2563eb 0%, #3b82f6 100%);
-            --hero: linear-gradient(135deg, rgba(255,255,255,0.78) 0%, rgba(241,245,249,0.72) 100%);
-            --tech: rgba(255,255,255,0.72);
+            --soft: #eff6ff;
+            --accent: linear-gradient(135deg, #0284c7 0%, #2563eb 55%, #1d4ed8 100%);
+            --hero: linear-gradient(135deg, rgba(255,255,255,0.88) 0%, rgba(240,249,255,0.82) 100%);
+            --tech: rgba(248, 250, 252, 0.86);
+            --uploader-bg: rgba(241, 245, 249, 0.88);
+            --uploader-border: rgba(14, 165, 233, 0.22);
+            --input-chip: rgba(2, 132, 199, 0.08);
         }
     }
 
     @media (prefers-color-scheme: dark) {
+        [data-testid="stAppViewContainer"] {
+            background:
+                radial-gradient(circle at top left, rgba(14, 165, 233, 0.14), transparent 24%),
+                radial-gradient(circle at top right, rgba(37, 99, 235, 0.16), transparent 24%),
+                linear-gradient(180deg, #020617 0%, #0f172a 58%, #111827 100%);
+        }
+
         :root {
-            --card-bg: rgba(15, 23, 42, 0.66);
-            --card-border: rgba(148, 163, 184, 0.14);
+            --page-shell: rgba(15, 23, 42, 0.46);
+            --card-bg: rgba(15, 23, 42, 0.78);
+            --card-border: rgba(148, 163, 184, 0.18);
             --title: #f8fafc;
             --text: #e2e8f0;
             --muted: #94a3b8;
-            --soft: #0f172a;
-            --accent: linear-gradient(135deg, #2563eb 0%, #3b82f6 100%);
-            --hero: linear-gradient(135deg, rgba(15,23,42,0.82) 0%, rgba(17,24,39,0.76) 100%);
-            --tech: rgba(17,24,39,0.85);
+            --soft: #0b1120;
+            --accent: linear-gradient(135deg, #0ea5e9 0%, #2563eb 50%, #1d4ed8 100%);
+            --hero: linear-gradient(135deg, rgba(15,23,42,0.92) 0%, rgba(17,24,39,0.84) 100%);
+            --tech: rgba(15, 23, 42, 0.88);
+            --uploader-bg: rgba(15, 23, 42, 0.82);
+            --uploader-border: rgba(56, 189, 248, 0.2);
+            --input-chip: rgba(14, 165, 233, 0.12);
         }
+    }
+
+    .section-shell {
+        position: relative;
+        margin-top: var(--section-gap);
+        padding: 1.25rem;
+        border-radius: 32px;
+        background: var(--page-shell);
+        border: 1px solid rgba(148, 163, 184, 0.1);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(18px);
+        -webkit-backdrop-filter: blur(18px);
+    }
+
+    .section-shell + .section-shell {
+        margin-top: var(--section-gap);
     }
 
     .hero-card {
         background: var(--hero);
         border: 1px solid var(--card-border);
         border-radius: var(--radius-xl);
-        padding: 32px 28px;
+        padding: 42px 34px;
         backdrop-filter: blur(18px);
         -webkit-backdrop-filter: blur(18px);
-        box-shadow: var(--shadow);
         text-align: center;
-        margin-bottom: 22px;
     }
 
     .hero-title {
         color: var(--title);
-        font-size: 3rem;
+        font-size: clamp(2.4rem, 4vw, 3.6rem);
         font-weight: 800;
         line-height: 1.15;
-        margin-bottom: 10px;
+        margin-bottom: 0.9rem;
         letter-spacing: -0.03em;
     }
 
     .hero-subtitle {
         color: var(--text);
-        font-size: 1.08rem;
-        line-height: 1.75;
-        max-width: 850px;
+        font-size: 1.05rem;
+        line-height: 1.85;
+        max-width: 760px;
         margin: 0 auto;
+    }
+
+    .hero-strip {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.55rem;
+        padding: 0.5rem 0.9rem;
+        border-radius: 999px;
+        background: var(--input-chip);
+        border: 1px solid var(--card-border);
+        color: var(--muted);
+        font-size: 0.9rem;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        margin-bottom: 1rem;
     }
 
     .section-heading {
@@ -135,8 +195,8 @@ st.markdown(
         font-size: 2.2rem;
         font-weight: 800;
         line-height: 1.2;
-        margin-top: 10px;
-        margin-bottom: 10px;
+        margin-top: 0;
+        margin-bottom: 0.65rem;
         letter-spacing: -0.02em;
     }
 
@@ -144,18 +204,17 @@ st.markdown(
         color: var(--muted);
         text-align: center;
         font-size: 1rem;
-        margin-bottom: 10px;
+        margin-bottom: 0.45rem;
     }
 
     .main-card {
         background: var(--card-bg);
         border: 1px solid var(--card-border);
         border-radius: var(--radius-xl);
-        padding: 28px;
+        padding: 30px;
         backdrop-filter: blur(18px);
         -webkit-backdrop-filter: blur(18px);
-        box-shadow: var(--shadow);
-        margin-bottom: 22px;
+        margin-top: 1.4rem;
     }
 
     .result-card {
@@ -165,7 +224,6 @@ st.markdown(
         padding: 30px;
         backdrop-filter: blur(18px);
         -webkit-backdrop-filter: blur(18px);
-        box-shadow: var(--shadow);
         margin-bottom: 20px;
     }
 
@@ -225,7 +283,6 @@ st.markdown(
         padding: 22px;
         backdrop-filter: blur(16px);
         -webkit-backdrop-filter: blur(16px);
-        box-shadow: var(--shadow);
         margin-top: 12px;
     }
 
@@ -257,7 +314,6 @@ st.markdown(
         border: 1px solid var(--card-border);
         border-radius: 18px;
         padding: 18px;
-        box-shadow: var(--shadow);
         margin-top: 14px;
         margin-bottom: 10px;
     }
@@ -266,7 +322,7 @@ st.markdown(
         color: var(--muted);
         text-align: center;
         font-size: 0.95rem;
-        margin-top: 26px;
+        margin-top: 2rem;
     }
 
     .stButton > button {
@@ -288,12 +344,41 @@ st.markdown(
     }
 
     div[data-testid="stFileUploader"] {
-        border-radius: 18px;
+        border: 1px dashed var(--uploader-border);
+        border-radius: 24px;
+        background: var(--uploader-bg);
+        padding: 0.6rem;
     }
 
     div[data-testid="stImage"] img {
         border-radius: 18px;
         box-shadow: 0 14px 34px rgba(0,0,0,0.14);
+    }
+
+    div[data-testid="stAlert"] {
+        border-radius: 18px;
+    }
+
+    .section-anchor {
+        position: relative;
+        top: -24px;
+    }
+
+    @media (max-width: 900px) {
+        .block-container {
+            padding-top: 1rem;
+            padding-bottom: 2.2rem;
+        }
+
+        .section-shell {
+            padding: 0.85rem;
+        }
+
+        .hero-card,
+        .main-card,
+        .result-card {
+            padding: 22px;
+        }
     }
     </style>
     """,
@@ -305,12 +390,15 @@ st.markdown(
 # =========================
 st.markdown(
     """
+    <div class="section-shell">
     <div class="hero-card">
-        <div class="hero-title">🩺 Skin Cancer Screening System</div>
+        <div class="hero-strip">AI Dermatology Screening</div>
+        <div class="hero-title">Skin Cancer Screening System</div>
         <div class="hero-subtitle">
             Upload a skin lesion image and receive an AI-based screening result with
             prediction confidence, risk level, and recommendation.
         </div>
+    </div>
     </div>
     """,
     unsafe_allow_html=True
@@ -321,14 +409,14 @@ st.info(
     "It is not a confirmed medical diagnosis."
 )
 
-st.write("")
+st.markdown('<div class="section-shell">', unsafe_allow_html=True)
 
 # =========================
 # Section 2: Upload
 # =========================
 st.markdown('<div class="section-heading">Upload Image</div>', unsafe_allow_html=True)
 st.markdown('<div class="section-subtext">Supported formats: JPG, JPEG, PNG</div>', unsafe_allow_html=True)
-st.markdown('<div class="section-subtext">On free hosting, the backend may take around 30–60 seconds to wake up on the first request.</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-subtext">On free hosting, the backend may take around 30-60 seconds to wake up on the first request.</div>', unsafe_allow_html=True)
 
 st.markdown('<div class="main-card">', unsafe_allow_html=True)
 
@@ -369,6 +457,7 @@ if reset:
     st.session_state.prediction_result = None
     st.session_state.error_message = None
     st.session_state.show_result = False
+    st.session_state.scroll_to_result = False
     st.rerun()
 
 # =========================
@@ -418,6 +507,7 @@ if analyze and uploaded_file is not None:
         if response.status_code == 200:
             st.session_state.prediction_result = response.json()
             st.session_state.show_result = True
+            st.session_state.scroll_to_result = True
             scan_holder.markdown(
                 '<div class="scan-box"><strong>Analysis completed successfully.</strong></div>',
                 unsafe_allow_html=True
@@ -431,9 +521,10 @@ if analyze and uploaded_file is not None:
         st.session_state.prediction_result = None
         st.session_state.error_message = (
             "The backend is likely waking up from cold start. "
-            "Please wait about 30–60 seconds and click Analyze Image again."
+            "Please wait about 30-60 seconds and click Analyze Image again."
         )
         st.session_state.show_result = False
+        st.session_state.scroll_to_result = False
 
     except requests.exceptions.ConnectionError:
         st.session_state.prediction_result = None
@@ -442,12 +533,15 @@ if analyze and uploaded_file is not None:
             "Please wait a bit and try again."
         )
         st.session_state.show_result = False
+        st.session_state.scroll_to_result = False
 
     except Exception as e:
         st.session_state.prediction_result = None
         st.session_state.error_message = f"Something went wrong: {e}"
         st.session_state.show_result = False
+        st.session_state.scroll_to_result = False
 
+st.markdown('</div>', unsafe_allow_html=True)
 st.markdown('</div>', unsafe_allow_html=True)
 
 # =========================
@@ -459,6 +553,9 @@ if st.session_state.error_message:
 # =========================
 # Section 3: Screening Result
 # =========================
+st.markdown('<div class="section-shell">', unsafe_allow_html=True)
+st.markdown('<div id="screening-result-anchor" class="section-anchor"></div>', unsafe_allow_html=True)
+
 if st.session_state.show_result and st.session_state.prediction_result is not None:
     result = st.session_state.prediction_result
 
@@ -547,6 +644,37 @@ Recommendation: {recommendation}"""
         """,
         unsafe_allow_html=True
     )
+else:
+    st.markdown('<div class="section-heading">Screening Result</div>', unsafe_allow_html=True)
+    st.markdown(
+        """
+        <div class="result-card">
+            <div class="result-line" style="margin-bottom:0;">
+                Your AI screening summary will appear here after you upload an image and run the analysis.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+st.markdown('</div>', unsafe_allow_html=True)
+
+if st.session_state.show_result and st.session_state.scroll_to_result:
+    components.html(
+        """
+        <script>
+        const scrollToResult = () => {
+            const anchor = window.parent.document.getElementById("screening-result-anchor");
+            if (anchor) {
+                anchor.scrollIntoView({ behavior: "smooth", block: "start" });
+            }
+        };
+        window.parent.requestAnimationFrame(scrollToResult);
+        </script>
+        """,
+        height=0
+    )
+    st.session_state.scroll_to_result = False
 
 # =========================
 # Footer
