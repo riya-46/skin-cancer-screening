@@ -263,7 +263,7 @@ if analyze and uploaded_file is not None:
             response = requests.post(
                 f"{BACKEND_URL}/predict",
                 files=files,
-                timeout=60
+                timeout=120
             )
 
             if response.status_code == 200:
@@ -276,7 +276,9 @@ if analyze and uploaded_file is not None:
         except requests.exceptions.ConnectionError:
             st.error("Could not connect to backend. Please make sure the FastAPI server is running.")
         except requests.exceptions.Timeout:
-            st.error("Request timed out. Please try again.")
+            st.warning(
+                "The backend is waking up from sleep on the free server. "
+                "Please wait about 1 minute and click Analyze Image again.")
         except Exception as e:
             st.error(f"Something went wrong: {e}")
 
