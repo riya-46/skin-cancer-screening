@@ -1,10 +1,8 @@
-import os
 import io
 import torch
 import torch.nn as nn
 from PIL import Image
 from torchvision import transforms, models
-
 
 # =========================
 # Config
@@ -14,12 +12,10 @@ IMG_SIZE = 300
 THRESHOLD = 0.5
 CLASS_NAMES = ["benign", "malignant"]
 
-
 # =========================
 # Device
 # =========================
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 
 # =========================
 # Transform
@@ -33,23 +29,18 @@ transform = transforms.Compose([
     ),
 ])
 
-
 # =========================
 # Load model once
 # =========================
 def load_model():
     model = models.densenet121(weights=None)
     model.classifier = nn.Linear(model.classifier.in_features, 2)
-
     model.load_state_dict(torch.load(MODEL_PATH, map_location=device, weights_only=True))
     model.to(device)
     model.eval()
-
     return model
 
-
 model = load_model()
-
 
 # =========================
 # Risk logic
@@ -62,12 +53,10 @@ def get_risk_level(malignant_prob: float) -> str:
     else:
         return "High Risk"
 
-
 def get_recommendation(predicted_class: str) -> str:
     if predicted_class == "malignant":
         return "Dermatologist consultation advised."
     return "Low-risk pattern detected, but monitor changes and consult a doctor if needed."
-
 
 # =========================
 # Main prediction function
@@ -89,10 +78,13 @@ def predict_image_bytes(image_bytes: bytes) -> dict:
     risk_level = get_risk_level(malignant_prob)
     recommendation = get_recommendation(predicted_class)
 
+    predicted_probability = benign_prob if predicted_class == "benign" else malignant_prob
+
     return {
-        "prediction": predicted_class,
-        "benign_probability": round(benign_prob, 4),
-        "malignant_probability": round(malignant_prob, 4),
+        "predicted_class": predicted_class.capitalize(),
+        "predicted_probability": float(predicted_probability),
+        "benign_probability": float(benign_prob),
+        "malignant_probability": float(malignant_prob),
         "risk_level": risk_level,
         "recommendation": recommendation,
     }
