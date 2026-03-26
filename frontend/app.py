@@ -200,36 +200,78 @@ with st.container():
     st.markdown('<div class="muted-text">Supported formats: JPG, JPEG, PNG</div>', unsafe_allow_html=True)
 
     uploaded_file = st.file_uploader(
-        "Choose an image file",
-        type=["jpg", "jpeg", "png"],
-        label_visibility="collapsed"
-    )
+    "Choose an image file",
+    type=["jpg", "jpeg", "png"],
+    label_visibility="collapsed"
+)
 
-button_left, button_spacer, button_right = st.columns([1, 3, 1])
+analyze = False
+reset = False
 
-with button_left:
-    analyze = st.button("Analyze Image")
+if uploaded_file is not None:
+    image = Image.open(uploaded_file)
+    st.session_state.uploaded_preview = image
 
-with button_right:
-    reset = st.button("Reset")
+    # centered content area
+    outer_left, outer_center, outer_right = st.columns([1, 3, 1])
+
+    with outer_center:
+        # button row
+        btn_left, btn_mid, btn_right = st.columns([1, 1.2, 1])
+
+        with btn_left:
+            analyze = st.button("Analyze Image", use_container_width=True)
+
+        with btn_right:
+            reset = st.button("Reset", use_container_width=True)
+
+        st.write("")
+
+        # centered image preview
+        img_left, img_center, img_right = st.columns([1, 3, 1])
+
+        with img_center:
+            st.image(
+                image,
+                caption="Image Preview",
+                width=300
+            )
 
 if reset:
     st.session_state.prediction_result = None
     st.session_state.uploaded_preview = None
     st.rerun()
 
-if uploaded_file is not None:
-    image = Image.open(uploaded_file)
-    st.session_state.uploaded_preview = image
+if analyze and uploaded_file is not None:
+    with st.spinner("Analyzing image..."):
+        try:
+            files = {
+                "file": (
+                    uploaded_file.name,
+                    uploaded_file.getvalue(),
+                    uploaded_file.type
+                )
+            }
 
-    preview_left, preview_center, preview_right = st.columns([1, 2, 1])
+            response = requests.post(
+                "http://127.0.0.1:8000/predict",
+                files=files,
+                timeout=60
+            )
 
-    with preview_center:
-        st.image(
-            image,
-            caption="Image Preview",
-            width=300
-        )
+            if response.status_code == 200:
+                st.session_state.prediction_result = response.json()
+                st.success("Analysis completed successfully.")
+            else:
+                st.error(f"API Error: {response.status_code}")
+                st.text(response.text)
+
+        except requests.exceptions.ConnectionError:
+            st.error("Could not connect to backend. Please make sure the FastAPI server is running.")
+        except requests.exceptions.Timeout:
+            st.error("Request timed out. Please try again.")
+        except Exception as e:
+            st.error(f"Something went wrong: {e}")
 
 if analyze and uploaded_file is not None:
     with st.spinner("Analyzing image..."):
