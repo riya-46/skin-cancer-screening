@@ -2,5 +2,6 @@ venv/
 __pycache__/
 *.pyc
 data/
-models/
+models/*
+!models/best_model.pth
 .streamlit/
