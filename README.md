@@ -61,3 +61,22 @@ Instead of direct classification, model outputs risk:
 
 ## ⚠️ Disclaimer
 This project is for educational purposes only and not a medical diagnostic tool.
+
+## Deployment
+
+### Option 1: Render for backend + frontend
+- This repo now includes [render.yaml](./render.yaml).
+- Push the repo to GitHub.
+- In Render, create a new Blueprint from the repository.
+- Render will create:
+  - `skin-cancer-backend`
+  - `skin-cancer-frontend`
+
+### Option 2: Render backend + Streamlit Community Cloud frontend
+- Deploy the FastAPI backend on Render with:
+  - Build command: `pip install -r requirements.txt`
+  - Start command: `uvicorn backend.main:app --host 0.0.0.0 --port $PORT`
+- Deploy the frontend on Streamlit Community Cloud from `frontend/app.py`
+- In Streamlit secrets, set:
+  - `BACKEND_URL = "https://your-backend-service.onrender.com"`
+- A sample secrets file is included at [`.streamlit/secrets.toml.example`](./.streamlit/secrets.toml.example).

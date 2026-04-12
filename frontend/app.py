@@ -17,7 +17,10 @@ st.set_page_config(
 # =========================
 # Backend URL
 # =========================
+BACKEND_HOSTPORT = os.getenv("BACKEND_HOSTPORT", "").strip()
 BACKEND_URL = os.getenv("BACKEND_URL", "").strip()
+if not BACKEND_URL and BACKEND_HOSTPORT:
+    BACKEND_URL = f"http://{BACKEND_HOSTPORT}"
 if not BACKEND_URL:
     try:
         BACKEND_URL = st.secrets["BACKEND_URL"].strip()
