@@ -1,5 +1,6 @@
 import os
 import time
+from io import BytesIO
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
@@ -46,6 +47,38 @@ def get_risk_color(risk_level: str) -> str:
     if risk_level == "Invalid Image":
         return "#64748b"
     return "#ef4444"
+
+
+IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
+SAMPLE_ROOT = "sample_images"
+
+
+@st.cache_data(show_spinner=False)
+def get_sample_image_options():
+    if not os.path.isdir(SAMPLE_ROOT):
+        return []
+
+    sample_options = []
+    for class_name in sorted(os.listdir(SAMPLE_ROOT)):
+        class_dir = os.path.join(SAMPLE_ROOT, class_name)
+        if not os.path.isdir(class_dir):
+            continue
+
+        filenames = sorted(
+            name for name in os.listdir(class_dir)
+            if os.path.isfile(os.path.join(class_dir, name))
+            and name.lower().endswith(IMAGE_EXTENSIONS)
+        )
+
+        for filename in filenames:
+            sample_options.append({
+                "label": f"{class_name.title()} / {filename}",
+                "path": os.path.join(class_dir, filename),
+                "class_name": class_name,
+                "filename": filename,
+            })
+
+    return sample_options
 
 # =========================
 # Session state
@@ -530,8 +563,8 @@ st.markdown(
         <div class="hero-strip">AI Dermatology Screening</div>
         <div class="hero-title">Skin Cancer Screening System</div>
         <div class="hero-subtitle">
-            Upload a skin lesion image and receive a fast AI-assisted screening summary
-            with confidence score, risk level, and next-step recommendation.
+            Upload a close-up skin lesion image and receive a fast AI-assisted screening
+            summary with confidence score, risk level, and next-step recommendation.
         </div>
     </div>
     </div>
@@ -542,24 +575,68 @@ st.markdown(
 st.markdown('<div class="section-shell">', unsafe_allow_html=True)
 
 st.markdown('<div class="section-heading">Upload Image</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-subtext">Upload a close-up lesion photo, not a full-arm, face, or general rash image.</div>', unsafe_allow_html=True)
 st.markdown('<div class="section-subtext">Supported formats: JPG, JPEG, PNG</div>', unsafe_allow_html=True)
 st.markdown('<div class="section-subtext">On free hosting, the backend may take around 30-60 seconds to wake up on the first request.</div>', unsafe_allow_html=True)
 
 st.markdown('<div class="main-card">', unsafe_allow_html=True)
 
-uploaded_file = st.file_uploader(
-    "Choose an image file",
-    type=["jpg", "jpeg", "png"],
+sample_options = get_sample_image_options()
+input_mode = st.radio(
+    "Image source",
+    options=["Upload your image", "Choose from sample folder"],
+    horizontal=True,
     label_visibility="collapsed",
-    key=f"uploader_{st.session_state.uploader_key}"
+    key=f"input_mode_{st.session_state.uploader_key}"
 )
+
+uploaded_file = None
+selected_sample = None
+
+if input_mode == "Upload your image":
+    uploaded_file = st.file_uploader(
+        "Choose an image file",
+        type=["jpg", "jpeg", "png"],
+        label_visibility="collapsed",
+        key=f"uploader_{st.session_state.uploader_key}"
+    )
+else:
+    if sample_options:
+        selected_label = st.selectbox(
+            "Choose a sample image",
+            options=[option["label"] for option in sample_options],
+            index=None,
+            placeholder="Select a sample lesion or invalid image",
+            key=f"sample_selector_{st.session_state.uploader_key}"
+        )
+        if selected_label:
+            selected_sample = next(
+                option for option in sample_options
+                if option["label"] == selected_label
+            )
+    else:
+        st.info("Sample folder not found yet. Add demo images inside sample_images/ to use this option.")
+
+image = None
+image_name = None
+image_bytes = None
+image_mime = "image/jpeg"
+
+if uploaded_file is not None:
+    image = Image.open(uploaded_file)
+    image_name = uploaded_file.name
+    image_bytes = uploaded_file.getvalue()
+    image_mime = uploaded_file.type or image_mime
+elif selected_sample is not None:
+    with open(selected_sample["path"], "rb") as sample_file:
+        image_bytes = sample_file.read()
+    image = Image.open(BytesIO(image_bytes))
+    image_name = selected_sample["filename"]
 
 analyze = False
 reset = False
 
-if uploaded_file is not None:
-    image = Image.open(uploaded_file)
-
+if image is not None:
     left_col, center_col, right_col = st.columns([1.1, 1.35, 1.1], gap="medium")
 
     with left_col:
@@ -568,7 +645,10 @@ if uploaded_file is not None:
 
     with center_col:
         st.image(image, use_container_width=True)
-        st.markdown('<div class="preview-caption">Image Preview</div>', unsafe_allow_html=True)
+        preview_caption = "Image Preview"
+        if selected_sample is not None:
+            preview_caption = f"Sample Preview • {selected_sample['class_name'].title()}"
+        st.markdown(f'<div class="preview-caption">{preview_caption}</div>', unsafe_allow_html=True)
 
     with right_col:
         st.markdown('<div class="button-spacer"></div>', unsafe_allow_html=True)
@@ -589,7 +669,7 @@ if reset:
 # =========================
 # Analyze logic + AI scan effect
 # =========================
-if analyze and uploaded_file is not None:
+if analyze and image_bytes is not None and image_name is not None:
     st.session_state.error_message = None
     st.session_state.prediction_result = None
     st.session_state.show_result = False
@@ -616,9 +696,9 @@ if analyze and uploaded_file is not None:
 
         files = {
             "file": (
-                uploaded_file.name,
-                uploaded_file.getvalue(),
-                uploaded_file.type
+                image_name,
+                image_bytes,
+                image_mime
             )
         }
 
@@ -725,10 +805,10 @@ if st.session_state.show_result and st.session_state.prediction_result is not No
     )
 
     if not is_valid_image:
-        st.warning("This upload does not look like a valid skin lesion image. Try a clearer close-up lesion photo.")
+        st.warning("This upload does not look like a valid close-up skin lesion image. Try a clearer lesion-focused photo.")
 
     if is_uncertain:
-        st.info("The model is uncertain about this image. Consider uploading a clearer lesion photo.")
+        st.info("The model is uncertain about this image. Consider uploading a sharper, closer lesion photo.")
 
     st.markdown('<div class="section-heading" style="font-size:1.8rem;">Detailed Probabilities</div>', unsafe_allow_html=True)
 

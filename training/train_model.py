@@ -246,6 +246,76 @@ def evaluate_model(model, loader, criterion, device, malignant_idx):
     }
 
 
+def compute_binary_metrics(binary_labels, binary_preds):
+    return {
+        "precision": precision_score(binary_labels, binary_preds, zero_division=0),
+        "recall": recall_score(binary_labels, binary_preds, zero_division=0),
+        "f1": f1_score(binary_labels, binary_preds, zero_division=0),
+    }
+
+
+def find_best_malignant_threshold(all_labels, all_probs, malignant_idx):
+    binary_labels = (np.array(all_labels) == malignant_idx).astype(int)
+    candidate_thresholds = [0.35, 0.45, 0.55, 0.65, 0.75, 0.80]
+
+    best_threshold = 0.75
+    best_metrics = {"precision": 0.0, "recall": 0.0, "f1": 0.0}
+    best_score = -1.0
+
+    for threshold in candidate_thresholds:
+        binary_preds = (all_probs >= threshold).astype(int)
+        metrics = compute_binary_metrics(binary_labels, binary_preds)
+
+        # Favor precision improvement but keep recall clinically useful.
+        score = (0.45 * metrics["precision"]) + (0.30 * metrics["recall"]) + (0.25 * metrics["f1"])
+        if metrics["recall"] < 0.80:
+            score -= 0.10
+
+        if score > best_score:
+            best_score = score
+            best_threshold = threshold
+            best_metrics = metrics
+
+    return best_threshold, best_metrics
+
+
+def find_best_confidence_threshold(metrics, malignant_idx):
+    labels = metrics["labels"]
+    preds = metrics["preds"]
+    confidences = metrics["confidences"]
+    candidate_thresholds = [0.55, 0.60, 0.65, 0.70, 0.75, 0.80]
+
+    best_threshold = 0.70
+    best_score = -1.0
+
+    for threshold in candidate_thresholds:
+        keep_mask = confidences >= threshold
+        coverage = keep_mask.mean()
+        if coverage < 0.70:
+            continue
+
+        kept_labels = labels[keep_mask]
+        kept_preds = preds[keep_mask]
+        kept_binary_labels = (kept_labels == malignant_idx).astype(int)
+        kept_binary_preds = (kept_preds == malignant_idx).astype(int)
+        kept_metrics = compute_binary_metrics(kept_binary_labels, kept_binary_preds)
+        kept_acc = (kept_labels == kept_preds).mean()
+
+        score = (
+            0.35 * kept_acc
+            + 0.25 * kept_metrics["precision"]
+            + 0.20 * kept_metrics["recall"]
+            + 0.10 * kept_metrics["f1"]
+            + 0.10 * coverage
+        )
+
+        if score > best_score:
+            best_score = score
+            best_threshold = threshold
+
+    return best_threshold
+
+
 def analyze_uncertainty(all_labels, all_probs, malignant_idx):
     thresholds = [0.35, 0.45, 0.55, 0.65, 0.75]
 
@@ -461,6 +531,9 @@ def main():
     best_val_acc = 0.0
     best_val_recall = 0.0
     best_val_f1 = 0.0
+    best_val_precision = 0.0
+    best_malignant_threshold = 0.75
+    best_confidence_threshold = 0.70
     no_improve_epochs = 0
 
     for epoch in range(num_epochs):
@@ -497,10 +570,23 @@ def main():
         )
         val_loss = val_metrics["loss"]
         val_acc = val_metrics["acc"]
+        val_precision = val_metrics["malignant_precision"]
         val_recall = val_metrics["malignant_recall"]
         val_f1 = val_metrics["malignant_f1"]
 
-        score = (0.25 * (val_acc / 100.0)) + (0.40 * val_recall) + (0.35 * val_f1)
+        val_threshold, val_threshold_metrics = find_best_malignant_threshold(
+            val_metrics["labels"],
+            val_metrics["probs"],
+            malignant_idx,
+        )
+        val_confidence_threshold = find_best_confidence_threshold(val_metrics, malignant_idx)
+
+        score = (
+            0.20 * (val_acc / 100.0)
+            + 0.25 * val_precision
+            + 0.30 * val_recall
+            + 0.25 * val_f1
+        )
         scheduler.step(score)
 
         current_lr = optimizer.param_groups[0]["lr"]
@@ -511,15 +597,20 @@ def main():
             f"Train Acc: {train_acc:.2f}% | "
             f"Val Loss: {val_loss:.4f} | "
             f"Val Acc: {val_acc:.2f}% | "
+            f"Val Malignant Precision: {val_precision:.4f} | "
             f"Val Malignant Recall: {val_recall:.4f} | "
-            f"Val Malignant F1: {val_f1:.4f}"
+            f"Val Malignant F1: {val_f1:.4f} | "
+            f"Best Thresh: {val_threshold:.2f}"
         )
 
         if score > best_score:
             best_score = score
             best_val_acc = val_acc
+            best_val_precision = val_precision
             best_val_recall = val_recall
             best_val_f1 = val_f1
+            best_malignant_threshold = val_threshold
+            best_confidence_threshold = val_confidence_threshold
             no_improve_epochs = 0
 
             torch.save(model.state_dict(), model_save_path)
@@ -529,8 +620,11 @@ def main():
                         "class_names": class_names,
                         "class_to_idx": class_to_idx,
                         "img_size": img_size,
-                        "recommended_malignant_threshold": 0.75,
-                        "recommended_confidence_threshold": 0.70,
+                        "recommended_malignant_threshold": best_malignant_threshold,
+                        "recommended_confidence_threshold": best_confidence_threshold,
+                        "validation_malignant_precision": best_val_precision,
+                        "validation_malignant_recall": best_val_recall,
+                        "validation_malignant_f1": best_val_f1,
                     },
                     meta_file,
                     indent=2,
@@ -546,8 +640,11 @@ def main():
 
     print("\nTraining complete!")
     print(f"Best Validation Accuracy: {best_val_acc:.2f}%")
+    print(f"Best Validation Malignant Precision: {best_val_precision:.4f}")
     print(f"Best Validation Malignant Recall: {best_val_recall:.4f}")
     print(f"Best Validation Malignant F1: {best_val_f1:.4f}")
+    print(f"Recommended Malignant Threshold: {best_malignant_threshold:.2f}")
+    print(f"Recommended Confidence Threshold: {best_confidence_threshold:.2f}")
 
     # -------------------------
     # Final Test Evaluation
@@ -569,6 +666,19 @@ def main():
     print(f"Final Test Malignant Precision: {test_metrics['malignant_precision']:.4f}")
     print(f"Final Test Malignant Recall: {test_metrics['malignant_recall']:.4f}")
     print(f"Final Test Malignant F1: {test_metrics['malignant_f1']:.4f}")
+
+    test_threshold, test_threshold_metrics = find_best_malignant_threshold(
+        all_labels,
+        all_probs,
+        malignant_idx,
+    )
+    print(
+        "Best Test Threshold Suggestion: "
+        f"{test_threshold:.2f} "
+        f"(Precision: {test_threshold_metrics['precision']:.4f}, "
+        f"Recall: {test_threshold_metrics['recall']:.4f}, "
+        f"F1: {test_threshold_metrics['f1']:.4f})"
+    )
 
     print("\nClassification Report:")
     print(

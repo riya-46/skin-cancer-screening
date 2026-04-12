@@ -116,19 +116,28 @@ def get_probability_map(probs):
 
 
 def resolve_prediction(probs):
-    confidence, predicted_idx = torch.max(probs, dim=0)
-    predicted_class = CLASS_NAMES[int(predicted_idx.item())]
     probability_map = get_probability_map(probs)
+    confidence, predicted_idx = torch.max(probs, dim=0)
+    top_class = CLASS_NAMES[int(predicted_idx.item())]
+    benign_prob = probability_map.get("benign_probability", 0.0)
     malignant_prob = probability_map.get("malignant_probability", 0.0)
+    invalid_prob = max(
+        probability_map.get("invalid_probability", 0.0),
+        probability_map.get("unknown_probability", 0.0),
+        probability_map.get("not_skin_lesion_probability", 0.0),
+    )
 
-    if predicted_class not in INVALID_CLASS_NAMES and "malignant" in CLASS_NAMES:
-        malignant_idx = CLASS_NAMES.index("malignant")
-        if float(probs[malignant_idx].item()) >= MALIGNANT_THRESHOLD:
-            predicted_class = "malignant"
-            confidence = probs[malignant_idx]
-        elif predicted_class == "malignant":
-            predicted_class = "benign"
-            confidence = probs[CLASS_NAMES.index("benign")]
+    if invalid_prob >= max(CONFIDENCE_THRESHOLD, malignant_prob, benign_prob):
+        predicted_class = "invalid"
+        confidence = torch.tensor(invalid_prob, device=probs.device)
+    elif malignant_prob >= MALIGNANT_THRESHOLD:
+        predicted_class = "malignant"
+        confidence = torch.tensor(malignant_prob, device=probs.device)
+    elif benign_prob >= MALIGNANT_THRESHOLD:
+        predicted_class = "benign"
+        confidence = torch.tensor(benign_prob, device=probs.device)
+    else:
+        predicted_class = top_class
 
     is_invalid = predicted_class in INVALID_CLASS_NAMES
     is_uncertain = (not is_invalid) and float(confidence.item()) < CONFIDENCE_THRESHOLD

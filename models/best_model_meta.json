@@ -10,6 +10,9 @@
     "invalid": 2
   },
   "img_size": 300,
-  "recommended_malignant_threshold": 0.65,
-  "recommended_confidence_threshold": 0.7
+  "recommended_malignant_threshold": 0.55,
+  "recommended_confidence_threshold": 0.8,
+  "validation_malignant_precision": 0.8853754940711462,
+  "validation_malignant_recall": 0.9333333333333333,
+  "validation_malignant_f1": 0.9087221095334685
 }

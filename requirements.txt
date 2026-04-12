@@ -3,7 +3,6 @@ torchvision
 scikit-learn
 numpy
 pillow
-opencv-python
 fastapi
 uvicorn
 streamlit
