@@ -4,4 +4,5 @@ __pycache__/
 data/
 models/*
 !models/best_model.pth
+!models/best_model_meta.json
 .streamlit/

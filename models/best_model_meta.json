@@ -1,0 +1,15 @@
+{
+  "class_names": [
+    "benign",
+    "malignant",
+    "invalid"
+  ],
+  "class_to_idx": {
+    "benign": 0,
+    "malignant": 1,
+    "invalid": 2
+  },
+  "img_size": 300,
+  "recommended_malignant_threshold": 0.65,
+  "recommended_confidence_threshold": 0.7
+}

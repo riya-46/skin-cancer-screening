@@ -1,5 +1,8 @@
+import json
 import os
 import random
+from collections import Counter
+
 import numpy as np
 from PIL import Image
 
@@ -7,17 +10,17 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
     classification_report,
     confusion_matrix,
+    f1_score,
     precision_score,
     recall_score,
-    f1_score,
 )
+from sklearn.model_selection import train_test_split
 
-from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms, models
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
+from torchvision import models, transforms
 
 
 # =========================
@@ -28,10 +31,12 @@ def set_seed(seed: int = 42):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 # =========================
-# 2. Custom Dataset
+# 2. Dataset
 # =========================
 class SkinCancerDataset(Dataset):
     def __init__(self, image_paths, labels, transform=None):
@@ -53,16 +58,43 @@ class SkinCancerDataset(Dataset):
 
 
 # =========================
-# 3. Load file paths
+# 3. Data Helpers
 # =========================
-def load_image_paths_and_labels(root_dir):
-    class_to_idx = {"benign": 0, "malignant": 1}
+def discover_class_names(root_dirs):
+    priority = ["benign", "malignant", "invalid", "unknown", "not_skin_lesion"]
+    discovered = []
+
+    for root_dir in root_dirs:
+        if not os.path.isdir(root_dir):
+            continue
+
+        for class_name in sorted(os.listdir(root_dir)):
+            class_dir = os.path.join(root_dir, class_name)
+            if os.path.isdir(class_dir) and class_name not in discovered:
+                discovered.append(class_name)
+
+    ordered = [name for name in priority if name in discovered]
+    extras = [name for name in discovered if name not in ordered]
+    class_names = ordered + extras
+
+    if "benign" not in class_names or "malignant" not in class_names:
+        raise ValueError(
+            "Dataset must contain at least 'benign' and 'malignant' folders."
+        )
+
+    return class_names
+
+
+def load_image_paths_and_labels(root_dir, class_to_idx):
     image_paths = []
     labels = []
 
     for class_name, label in class_to_idx.items():
         class_dir = os.path.join(root_dir, class_name)
-        for file_name in os.listdir(class_dir):
+        if not os.path.isdir(class_dir):
+            continue
+
+        for file_name in sorted(os.listdir(class_dir)):
             file_path = os.path.join(class_dir, file_name)
             if os.path.isfile(file_path):
                 image_paths.append(file_path)
@@ -71,10 +103,85 @@ def load_image_paths_and_labels(root_dir):
     return image_paths, labels
 
 
+def print_split_stats(split_name, labels, class_names):
+    counts = Counter(labels)
+    print(f"{split_name} size:", len(labels))
+    for idx, class_name in enumerate(class_names):
+        print(f"{split_name} {class_name} count:", counts.get(idx, 0))
+
+
+def build_transforms(img_size):
+    train_transform = transforms.Compose([
+        transforms.RandomResizedCrop(img_size, scale=(0.72, 1.0), ratio=(0.85, 1.15)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomVerticalFlip(),
+        transforms.RandomRotation(25),
+        transforms.RandomAffine(
+            degrees=0,
+            translate=(0.06, 0.06),
+            scale=(0.92, 1.08),
+            shear=8,
+        ),
+        transforms.ColorJitter(
+            brightness=0.22,
+            contrast=0.22,
+            saturation=0.18,
+            hue=0.03,
+        ),
+        transforms.RandomPerspective(distortion_scale=0.18, p=0.25),
+        transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 1.2)),
+        transforms.ToTensor(),
+        transforms.RandomErasing(
+            p=0.20,
+            scale=(0.02, 0.10),
+            ratio=(0.3, 3.0),
+            value="random",
+        ),
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225],
+        ),
+    ])
+
+    eval_transform = transforms.Compose([
+        transforms.Resize((img_size, img_size)),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225],
+        ),
+    ])
+
+    return train_transform, eval_transform
+
+
+def build_weighted_sampler(labels):
+    label_counts = Counter(labels)
+    sample_weights = [1.0 / label_counts[label] for label in labels]
+    return WeightedRandomSampler(
+        weights=torch.DoubleTensor(sample_weights),
+        num_samples=len(sample_weights),
+        replacement=True,
+    )
+
+
+def build_class_weights(labels, num_classes, device):
+    label_counts = Counter(labels)
+    total_samples = len(labels)
+    weights = []
+
+    for class_idx in range(num_classes):
+        count = label_counts.get(class_idx, 0)
+        weight = total_samples / max(count * num_classes, 1)
+        weights.append(weight)
+
+    return torch.tensor(weights, dtype=torch.float32, device=device)
+
+
 # =========================
-# 4. Evaluation Helper
+# 4. Evaluation
 # =========================
-def evaluate_model(model, loader, criterion, device):
+def evaluate_model(model, loader, criterion, device, malignant_idx):
     model.eval()
 
     total_loss = 0.0
@@ -84,6 +191,7 @@ def evaluate_model(model, loader, criterion, device):
     all_preds = []
     all_labels = []
     all_probs = []
+    all_confidences = []
 
     with torch.no_grad():
         for images, labels in loader:
@@ -92,8 +200,9 @@ def evaluate_model(model, loader, criterion, device):
             outputs = model(images)
             loss = criterion(outputs, labels)
 
-            probs = torch.softmax(outputs, dim=1)[:, 1]  # malignant probability
-            _, predicted = torch.max(outputs, 1)
+            probs = torch.softmax(outputs, dim=1)
+            confidences, predicted = torch.max(probs, dim=1)
+            malignant_probs = probs[:, malignant_idx]
 
             total_loss += loss.item()
             total_samples += labels.size(0)
@@ -101,13 +210,28 @@ def evaluate_model(model, loader, criterion, device):
 
             all_preds.extend(predicted.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
-            all_probs.extend(probs.cpu().numpy())
+            all_probs.extend(malignant_probs.cpu().numpy())
+            all_confidences.extend(confidences.cpu().numpy())
 
-    avg_loss = total_loss / len(loader)
-    acc = 100 * total_correct / total_samples
-    malignant_precision = precision_score(all_labels, all_preds, pos_label=1)
-    malignant_recall = recall_score(all_labels, all_preds, pos_label=1)
-    malignant_f1 = f1_score(all_labels, all_preds, pos_label=1)
+    avg_loss = total_loss / max(len(loader), 1)
+    acc = 100 * total_correct / max(total_samples, 1)
+    binary_labels = (np.array(all_labels) == malignant_idx).astype(int)
+    binary_preds = (np.array(all_preds) == malignant_idx).astype(int)
+    malignant_precision = precision_score(
+        binary_labels,
+        binary_preds,
+        zero_division=0,
+    )
+    malignant_recall = recall_score(
+        binary_labels,
+        binary_preds,
+        zero_division=0,
+    )
+    malignant_f1 = f1_score(
+        binary_labels,
+        binary_preds,
+        zero_division=0,
+    )
 
     return {
         "loss": avg_loss,
@@ -118,7 +242,91 @@ def evaluate_model(model, loader, criterion, device):
         "preds": np.array(all_preds),
         "labels": np.array(all_labels),
         "probs": np.array(all_probs),
+        "confidences": np.array(all_confidences),
     }
+
+
+def analyze_uncertainty(all_labels, all_probs, malignant_idx):
+    thresholds = [0.35, 0.45, 0.55, 0.65, 0.75]
+
+    print("\n=== Malignant Threshold Analysis ===")
+    for threshold in thresholds:
+        binary_labels = (np.array(all_labels) == malignant_idx).astype(int)
+        binary_preds = (all_probs >= threshold).astype(int)
+        positive_precision = precision_score(
+            binary_labels,
+            binary_preds,
+            zero_division=0,
+        )
+        positive_recall = recall_score(
+            binary_labels,
+            binary_preds,
+            zero_division=0,
+        )
+        positive_f1 = f1_score(
+            binary_labels,
+            binary_preds,
+            zero_division=0,
+        )
+
+        print(
+            f"Threshold {threshold:.2f} -> "
+            f"Precision: {positive_precision:.4f}, "
+            f"Recall: {positive_recall:.4f}, "
+            f"F1: {positive_f1:.4f}"
+        )
+
+
+def analyze_confidence_rejection(metrics, class_names, malignant_idx):
+    labels = metrics["labels"]
+    preds = metrics["preds"]
+    confidences = metrics["confidences"]
+
+    rejection_thresholds = [0.50, 0.60, 0.70, 0.80]
+
+    print("\n=== Confidence Rejection Analysis ===")
+    for threshold in rejection_thresholds:
+        keep_mask = confidences >= threshold
+        kept = int(keep_mask.sum())
+        total = len(confidences)
+
+        if kept == 0:
+            print(f"Confidence >= {threshold:.2f} -> no predictions kept")
+            continue
+
+        kept_labels = labels[keep_mask]
+        kept_preds = preds[keep_mask]
+        kept_acc = (kept_labels == kept_preds).mean() * 100.0
+        kept_binary_labels = (kept_labels == malignant_idx).astype(int)
+        kept_binary_preds = (kept_preds == malignant_idx).astype(int)
+        kept_recall = recall_score(
+            kept_binary_labels,
+            kept_binary_preds,
+            zero_division=0,
+        )
+        kept_f1 = f1_score(
+            kept_binary_labels,
+            kept_binary_preds,
+            zero_division=0,
+        )
+
+        print(
+            f"Confidence >= {threshold:.2f} -> "
+            f"coverage: {kept}/{total} ({(kept / total) * 100:.2f}%), "
+            f"acc: {kept_acc:.2f}%, "
+            f"malignant recall: {kept_recall:.4f}, "
+            f"malignant f1: {kept_f1:.4f}"
+        )
+
+    if any(name in class_names for name in ["invalid", "unknown", "not_skin_lesion"]):
+        print(
+            "\nInvalid-image class detected. The model can now learn to reject non-lesion uploads."
+        )
+    else:
+        print(
+            "\nNo invalid-image class found in dataset. "
+            "Add a folder like 'invalid' in train/test for real-world rejection."
+        )
 
 
 # =========================
@@ -137,25 +345,33 @@ def main():
     train_root = os.path.join(data_dir, "train")
     test_root = os.path.join(data_dir, "test")
     model_save_path = "models/best_model.pth"
+    metadata_save_path = "models/best_model_meta.json"
 
     os.makedirs("models", exist_ok=True)
+
+    class_names = discover_class_names([train_root, test_root])
+    class_to_idx = {class_name: idx for idx, class_name in enumerate(class_names)}
+    malignant_idx = class_to_idx["malignant"]
+
+    print("Classes:", class_names)
+    print("Class mapping:", class_to_idx)
 
     # -------------------------
     # Hyperparameters
     # -------------------------
-    IMG_SIZE = 300
-    BATCH_SIZE = 16
-    NUM_EPOCHS = 20
-    LEARNING_RATE = 1e-4
-    PATIENCE = 5
+    img_size = 300
+    batch_size = 16
+    num_epochs = 25
+    learning_rate = 3e-4
+    weight_decay = 1e-4
+    patience = 6
 
     # -------------------------
     # Load paths
     # -------------------------
-    train_paths, train_labels = load_image_paths_and_labels(train_root)
-    test_paths, test_labels = load_image_paths_and_labels(test_root)
+    train_paths, train_labels = load_image_paths_and_labels(train_root, class_to_idx)
+    test_paths, test_labels = load_image_paths_and_labels(test_root, class_to_idx)
 
-    # Stratified validation split
     train_img_paths, val_img_paths, train_y, val_y = train_test_split(
         train_paths,
         train_labels,
@@ -164,40 +380,14 @@ def main():
         stratify=train_labels,
     )
 
-    print("Train size:", len(train_img_paths))
-    print("Val size:", len(val_img_paths))
-    print("Test size:", len(test_paths))
-
-    print("Train benign count:", sum(1 for y in train_y if y == 0))
-    print("Train malignant count:", sum(1 for y in train_y if y == 1))
-    print("Val benign count:", sum(1 for y in val_y if y == 0))
-    print("Val malignant count:", sum(1 for y in val_y if y == 1))
-    print("Test benign count:", sum(1 for y in test_labels if y == 0))
-    print("Test malignant count:", sum(1 for y in test_labels if y == 1))
+    print_split_stats("Train", train_y, class_names)
+    print_split_stats("Val", val_y, class_names)
+    print_split_stats("Test", test_labels, class_names)
 
     # -------------------------
     # Transforms
     # -------------------------
-    train_transform = transforms.Compose([
-        transforms.Resize((IMG_SIZE, IMG_SIZE)),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(20),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2),
-        transforms.ToTensor(),
-        transforms.Normalize(
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225]
-        ),
-    ])
-
-    eval_transform = transforms.Compose([
-        transforms.Resize((IMG_SIZE, IMG_SIZE)),
-        transforms.ToTensor(),
-        transforms.Normalize(
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225]
-        ),
-    ])
+    train_transform, eval_transform = build_transforms(img_size)
 
     # -------------------------
     # Datasets
@@ -209,17 +399,19 @@ def main():
     # -------------------------
     # DataLoaders
     # -------------------------
+    train_sampler = build_weighted_sampler(train_y)
+
     train_loader = DataLoader(
         train_dataset,
-        batch_size=BATCH_SIZE,
-        shuffle=True,
+        batch_size=batch_size,
+        sampler=train_sampler,
         num_workers=0,
         pin_memory=True,
     )
 
     val_loader = DataLoader(
         val_dataset,
-        batch_size=BATCH_SIZE,
+        batch_size=batch_size,
         shuffle=False,
         num_workers=0,
         pin_memory=True,
@@ -227,27 +419,40 @@ def main():
 
     test_loader = DataLoader(
         test_dataset,
-        batch_size=BATCH_SIZE,
+        batch_size=batch_size,
         shuffle=False,
         num_workers=0,
         pin_memory=True,
     )
 
-    class_names = ["benign", "malignant"]
-    print("Classes:", class_names)
-
     # -------------------------
     # Model
     # -------------------------
     model = models.densenet121(weights=models.DenseNet121_Weights.DEFAULT)
-    model.classifier = nn.Linear(model.classifier.in_features, 2)
+    model.classifier = nn.Sequential(
+        nn.Dropout(p=0.35),
+        nn.Linear(model.classifier.in_features, len(class_names)),
+    )
     model = model.to(device)
 
     # -------------------------
     # Loss / Optimizer
     # -------------------------
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    class_weights = build_class_weights(train_y, len(class_names), device)
+    print("Class weights:", class_weights.detach().cpu().numpy().round(4).tolist())
+
+    criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.05)
+    optimizer = optim.AdamW(
+        model.parameters(),
+        lr=learning_rate,
+        weight_decay=weight_decay,
+    )
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="max",
+        factor=0.5,
+        patience=2,
+    )
 
     # -------------------------
     # Training Loop
@@ -258,7 +463,7 @@ def main():
     best_val_f1 = 0.0
     no_improve_epochs = 0
 
-    for epoch in range(NUM_EPOCHS):
+    for epoch in range(num_epochs):
         model.train()
 
         running_loss = 0.0
@@ -280,21 +485,28 @@ def main():
             train_total += labels.size(0)
             train_correct += (predicted == labels).sum().item()
 
-        train_loss = running_loss / len(train_loader)
-        train_acc = 100 * train_correct / train_total
+        train_loss = running_loss / max(len(train_loader), 1)
+        train_acc = 100 * train_correct / max(train_total, 1)
 
-        val_metrics = evaluate_model(model, val_loader, criterion, device)
+        val_metrics = evaluate_model(
+            model=model,
+            loader=val_loader,
+            criterion=criterion,
+            device=device,
+            malignant_idx=malignant_idx,
+        )
         val_loss = val_metrics["loss"]
         val_acc = val_metrics["acc"]
         val_recall = val_metrics["malignant_recall"]
         val_f1 = val_metrics["malignant_f1"]
 
-        # Balanced score:
-        # Accuracy + Malignant Recall + Malignant F1
-        score = (0.4 * (val_acc / 100.0)) + (0.3 * val_recall) + (0.3 * val_f1)
+        score = (0.25 * (val_acc / 100.0)) + (0.40 * val_recall) + (0.35 * val_f1)
+        scheduler.step(score)
 
+        current_lr = optimizer.param_groups[0]["lr"]
         print(
-            f"Epoch {epoch+1}/{NUM_EPOCHS} | "
+            f"Epoch {epoch + 1}/{num_epochs} | "
+            f"LR: {current_lr:.6f} | "
             f"Train Loss: {train_loss:.4f} | "
             f"Train Acc: {train_acc:.2f}% | "
             f"Val Loss: {val_loss:.4f} | "
@@ -311,12 +523,24 @@ def main():
             no_improve_epochs = 0
 
             torch.save(model.state_dict(), model_save_path)
+            with open(metadata_save_path, "w", encoding="utf-8") as meta_file:
+                json.dump(
+                    {
+                        "class_names": class_names,
+                        "class_to_idx": class_to_idx,
+                        "img_size": img_size,
+                        "recommended_malignant_threshold": 0.75,
+                        "recommended_confidence_threshold": 0.70,
+                    },
+                    meta_file,
+                    indent=2,
+                )
             print("Best model saved!")
         else:
             no_improve_epochs += 1
             print(f"No improvement for {no_improve_epochs} epoch(s).")
 
-        if no_improve_epochs >= PATIENCE:
+        if no_improve_epochs >= patience:
             print("\nEarly stopping triggered.")
             break
 
@@ -328,8 +552,14 @@ def main():
     # -------------------------
     # Final Test Evaluation
     # -------------------------
-    model.load_state_dict(torch.load(model_save_path, weights_only=True))
-    test_metrics = evaluate_model(model, test_loader, criterion, device)
+    model.load_state_dict(torch.load(model_save_path, map_location=device, weights_only=True))
+    test_metrics = evaluate_model(
+        model=model,
+        loader=test_loader,
+        criterion=criterion,
+        device=device,
+        malignant_idx=malignant_idx,
+    )
 
     all_preds = test_metrics["preds"]
     all_labels = test_metrics["labels"]
@@ -341,29 +571,20 @@ def main():
     print(f"Final Test Malignant F1: {test_metrics['malignant_f1']:.4f}")
 
     print("\nClassification Report:")
-    print(classification_report(all_labels, all_preds, target_names=class_names))
+    print(
+        classification_report(
+            all_labels,
+            all_preds,
+            target_names=class_names,
+            zero_division=0,
+        )
+    )
 
     print("Confusion Matrix:")
     print(confusion_matrix(all_labels, all_preds))
 
-    # -------------------------
-    # Threshold Analysis
-    # -------------------------
-    thresholds = [0.3, 0.4, 0.5, 0.6, 0.7]
-
-    print("\n=== Threshold Analysis ===")
-    for t in thresholds:
-        preds_t = (all_probs >= t).astype(int)
-        precision_t = precision_score(all_labels, preds_t, pos_label=1)
-        recall_t = recall_score(all_labels, preds_t, pos_label=1)
-        f1_t = f1_score(all_labels, preds_t, pos_label=1)
-
-        print(
-            f"Threshold {t} -> "
-            f"Precision: {precision_t:.4f}, "
-            f"Recall: {recall_t:.4f}, "
-            f"F1: {f1_t:.4f}"
-        )
+    analyze_uncertainty(all_labels, all_probs, malignant_idx)
+    analyze_confidence_rejection(test_metrics, class_names, malignant_idx)
 
 
 if __name__ == "__main__":

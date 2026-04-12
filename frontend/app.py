@@ -38,8 +38,10 @@ def format_percent(prob: float) -> str:
 def get_risk_color(risk_level: str) -> str:
     if risk_level == "Low Risk":
         return "#22c55e"
-    elif risk_level == "Suspicious":
+    if risk_level == "Suspicious":
         return "#f59e0b"
+    if risk_level == "Invalid Image":
+        return "#64748b"
     return "#ef4444"
 
 # =========================
@@ -681,14 +683,18 @@ if st.session_state.show_result and st.session_state.prediction_result is not No
     predicted_probability = result["predicted_probability"]
     benign_prob = result["benign_probability"]
     malignant_prob = result["malignant_probability"]
+    invalid_prob = result.get("invalid_probability", 0.0)
     risk_level = result["risk_level"]
     recommendation = result["recommendation"]
+    is_valid_image = result.get("is_valid_image", True)
+    is_uncertain = result.get("is_uncertain", False)
 
     risk_color = get_risk_color(risk_level)
     badge_bg = {
         "Low Risk": "rgba(34,197,94,0.16)",
         "Suspicious": "rgba(245,158,11,0.16)",
-        "High Risk": "rgba(239,68,68,0.16)"
+        "High Risk": "rgba(239,68,68,0.16)",
+        "Invalid Image": "rgba(148,163,184,0.16)",
     }.get(risk_level, "rgba(148,163,184,0.16)")
 
     st.markdown('<div class="section-heading">Screening Result</div>', unsafe_allow_html=True)
@@ -715,43 +721,91 @@ if st.session_state.show_result and st.session_state.prediction_result is not No
         unsafe_allow_html=True
     )
 
+    if not is_valid_image:
+        st.warning("This upload does not look like a valid skin lesion image. Try a clearer close-up lesion photo.")
+
+    if is_uncertain:
+        st.info("The model is uncertain about this image. Consider uploading a clearer lesion photo.")
+
     st.markdown('<div class="section-heading" style="font-size:1.8rem;">Detailed Probabilities</div>', unsafe_allow_html=True)
 
-    prob_col1, prob_col2 = st.columns(2, gap="large")
+    if is_valid_image and invalid_prob <= 0:
+        prob_col1, prob_col2 = st.columns(2, gap="large")
 
-    with prob_col1:
-        st.markdown(
-            f"""
-            <div class="mini-card">
-                <div class="mini-label">Benign Probability</div>
-                <div class="mini-value">{format_percent(benign_prob)}</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-        st.progress(float(benign_prob))
-        st.markdown(f'<div class="progress-label">Confidence share: {format_percent(benign_prob)}</div>', unsafe_allow_html=True)
+        with prob_col1:
+            st.markdown(
+                f"""
+                <div class="mini-card">
+                    <div class="mini-label">Benign Probability</div>
+                    <div class="mini-value">{format_percent(benign_prob)}</div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+            st.progress(float(benign_prob))
+            st.markdown(f'<div class="progress-label">Confidence share: {format_percent(benign_prob)}</div>', unsafe_allow_html=True)
 
-    with prob_col2:
-        st.markdown(
-            f"""
-            <div class="mini-card">
-                <div class="mini-label">Malignant Probability</div>
-                <div class="mini-value">{format_percent(malignant_prob)}</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-        st.progress(float(malignant_prob))
-        st.markdown(f'<div class="progress-label">Confidence share: {format_percent(malignant_prob)}</div>', unsafe_allow_html=True)
+        with prob_col2:
+            st.markdown(
+                f"""
+                <div class="mini-card">
+                    <div class="mini-label">Malignant Probability</div>
+                    <div class="mini-value">{format_percent(malignant_prob)}</div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+            st.progress(float(malignant_prob))
+            st.markdown(f'<div class="progress-label">Confidence share: {format_percent(malignant_prob)}</div>', unsafe_allow_html=True)
+    else:
+        prob_col1, prob_col2, prob_col3 = st.columns(3, gap="large")
+
+        with prob_col1:
+            st.markdown(
+                f"""
+                <div class="mini-card">
+                    <div class="mini-label">Benign Probability</div>
+                    <div class="mini-value">{format_percent(benign_prob)}</div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+            st.progress(float(benign_prob))
+
+        with prob_col2:
+            st.markdown(
+                f"""
+                <div class="mini-card">
+                    <div class="mini-label">Malignant Probability</div>
+                    <div class="mini-value">{format_percent(malignant_prob)}</div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+            st.progress(float(malignant_prob))
+
+        with prob_col3:
+            st.markdown(
+                f"""
+                <div class="mini-card">
+                    <div class="mini-label">Invalid Probability</div>
+                    <div class="mini-value">{format_percent(invalid_prob)}</div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+            st.progress(float(invalid_prob))
 
     # Technical Output always visible
     result_text = f"""===== Prediction Result =====
 
 Benign Probability: {benign_prob:.4f}
 Malignant Probability: {malignant_prob:.4f}
+Invalid Probability: {invalid_prob:.4f}
 Predicted Class: {predicted_class.lower()}
 Risk Level: {risk_level}
+Valid Image: {is_valid_image}
+Uncertain: {is_uncertain}
 
 Recommendation: {recommendation}"""
 
