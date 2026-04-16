@@ -2,7 +2,7 @@
 
 A Streamlit + FastAPI project for AI-assisted skin lesion screening using a DenseNet121-based PyTorch model.
 
-The system is built for **close-up skin lesion images**, not for full-body dermatology diagnosis. It supports three outcomes:
+The system is built for **close-up dermoscopic skin lesion images**, not for full-body dermatology diagnosis or normal casual skin photos. It supports three outcomes:
 
 - `Benign`
 - `Malignant`
@@ -27,10 +27,11 @@ The system is built for **close-up skin lesion images**, not for full-body derma
 This is a **skin lesion screening** project.
 
 It is designed for:
-- close-up lesion photos
+- close-up dermoscopic lesion images
 - binary lesion risk assessment with invalid-image rejection
 
 It is not designed for:
+- normal non-dermoscopic skin photos
 - general rash diagnosis
 - full-body dermatology analysis
 - clinical diagnosis
@@ -52,6 +53,8 @@ The training pipeline supports:
 Base lesion dataset source:
 - https://www.kaggle.com/datasets/fanconic/skin-cancer-malignant-vs-benign
 
+The main lesion classes are based on **dermoscopic images**, not ordinary mobile camera skin photos.
+
 Additional real-world robustness was added through an `invalid` class containing non-lesion or unsuitable images.
 
 ## Current Behavior
@@ -59,13 +62,14 @@ Additional real-world robustness was added through an `invalid` class containing
 The model is tuned as a **screening system**, so it prioritizes safety and may still produce false positives on difficult benign images. The `invalid` class helps reject clearly unsuitable uploads.
 
 In practical terms:
-- it works best on lesion-focused close-up images
+- it works best on lesion-focused dermoscopic images
+- normal skin photos may not behave as reliably as dermoscopic inputs
 - it may reject broad rash or body-part photos as `Invalid`
 - it should be demonstrated as a screening aid, not as a medical diagnostic tool
 
 ## Demo Sample Images
 
-For project showcase, curated demo images are available in:
+For project showcase and to test the app quickly, curated sample images are available in:
 
 - [sample_images/benign](./sample_images/benign)
 - [sample_images/malignant](./sample_images/malignant)
@@ -73,7 +77,7 @@ For project showcase, curated demo images are available in:
 
 The frontend includes a `Choose from sample folder` option that loads images only from `sample_images/`.
 
-This is useful when sharing the deployed app with people who do not already have lesion images.
+These sample images are provided so anyone can test the deployed app without collecting their own dermoscopic images first.
 
 ## Local Run
 
@@ -96,6 +100,11 @@ streamlit run frontend/app.py
 ```
 
 ## Deployment
+
+## Live Deployment
+
+- Frontend: https://skin-cancer-screening.streamlit.app/
+- Backend API: https://skin-cancer-backend-reva.onrender.com
 
 ### Option 1: Render for backend + frontend
 
