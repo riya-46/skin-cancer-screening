@@ -1,156 +1,304 @@
-# Skin Cancer Screening System
+# 🔬 Skin Cancer Screening System
 
 A Streamlit + FastAPI project for AI-assisted skin lesion screening using a DenseNet121-based PyTorch model.
 
-The system is built for **close-up skin lesion images**, not for full-body dermatology diagnosis. It supports three outcomes:
+🔗 Live Demo: [Skin Cancer Screening App](https://skin-cancer-screening.streamlit.app/)
 
-- `Benign`
-- `Malignant`
-- `Invalid`
+💻 Tech Stack:  
+Python • PyTorch • DenseNet121 • FastAPI • Streamlit
 
-`Invalid` is used for non-lesion or unsuitable uploads such as full-arm rash photos, body-part images, blurry captures, or unrelated images.
+---
 
-## What The Project Does
+## 👩‍💻 Development Approach
+
+This project was developed using an AI-assisted workflow along with feature planning, testing, model experimentation, and iterative improvements as part of my learning journey.
+
+### My contribution included:
+
+- Defining the project problem statement
+- Planning application flow and prediction outputs
+- Integrating frontend and backend workflow
+- Understanding model behavior and outputs
+- Testing and refining prediction behavior
+- Deployment and project refinement
+- Using prompt engineering to support implementation and learning
+
+### About implementation
+
+AI tools were used as development assistants for implementation support and explanations, while I focused on understanding concepts, integrating components, improving features, and learning practical AI application workflows.
+
+The goal was not only to build a working system but also to understand how AI-assisted development can support learning and project building.
+
+---
+
+## 📚 Learning Note
+
+This repository represents an AI-assisted learning project.
+
+The focus was on:
+
+- understanding machine learning workflows
+- model integration
+- frontend-backend communication
+- API deployment
+- practical AI application building
+
+This project represents an ongoing learning journey through practical project building and AI-assisted workflows.
+
+---
+
+## 📌 Project Scope
+
+This is a skin lesion screening project.
+
+Designed for:
+
+- close-up lesion photos
+- binary lesion risk assessment
+- invalid-image rejection
+
+Not designed for:
+
+- general rash diagnosis
+- full-body dermatology analysis
+- clinical diagnosis
+
+---
+
+## 🚀 What This Project Does
+
+The system:
 
 - Accepts a skin image from the user
-- Sends it to a FastAPI backend for inference
-- Returns a screening summary with:
+- Sends image data to a FastAPI backend
+- Performs model inference
+- Returns a screening summary including:
+
   - predicted class
   - confidence
   - risk level
   - recommendation
   - detailed probabilities
-- Supports a curated **sample folder** for demo use
 
-## Project Scope
+- Supports demo sample images
 
-This is a **skin lesion screening** project.
+---
 
-It is designed for:
-- close-up lesion photos
-- binary lesion risk assessment with invalid-image rejection
+## 🎯 Prediction Categories
 
-It is not designed for:
-- general rash diagnosis
-- full-body dermatology analysis
-- clinical diagnosis
+Possible outcomes:
 
-## Model
+### Benign
 
-- Architecture: `DenseNet121`
-- Framework: `PyTorch`
-- Backend inference: `FastAPI`
-- Frontend: `Streamlit`
+Lower-risk lesion prediction
 
-The training pipeline supports:
-- `benign`
-- `malignant`
-- `invalid`
+### Malignant
 
-## Dataset
+Higher-risk lesion prediction
 
-Base lesion dataset source:
-- https://www.kaggle.com/datasets/fanconic/skin-cancer-malignant-vs-benign
+### Invalid
 
-Additional real-world robustness was added through an `invalid` class containing non-lesion or unsuitable images.
+Used for:
 
-## Current Behavior
+- non-lesion images
+- blurry images
+- full body photos
+- unrelated uploads
+- unsuitable inputs
 
-The model is tuned as a **screening system**, so it prioritizes safety and may still produce false positives on difficult benign images. The `invalid` class helps reject clearly unsuitable uploads.
+---
 
-In practical terms:
-- it works best on lesion-focused close-up images
-- it may reject broad rash or body-part photos as `Invalid`
-- it should be demonstrated as a screening aid, not as a medical diagnostic tool
+## 🧠 Model Information
 
-## Demo Sample Images
+Architecture:
 
-For project showcase, curated demo images are available in:
+```text
+DenseNet121
+```
 
-- [sample_images/benign](./sample_images/benign)
-- [sample_images/malignant](./sample_images/malignant)
-- [sample_images/invalid](./sample_images/invalid)
+Framework:
 
-The frontend includes a `Choose from sample folder` option that loads images only from `sample_images/`.
+```text
+PyTorch
+```
 
-This is useful when sharing the deployed app with people who do not already have lesion images.
+Backend:
 
-## Local Run
+```text
+FastAPI
+```
 
-### 1. Install dependencies
+Frontend:
 
-```powershell
+```text
+Streamlit
+```
+
+Training pipeline supports:
+
+- benign
+- malignant
+- invalid
+
+---
+
+## 📂 Dataset
+
+Base dataset source:
+
+https://www.kaggle.com/datasets/fanconic/skin-cancer-malignant-vs-benign
+
+Additional robustness was introduced through an Invalid class containing unsuitable images.
+
+---
+
+## ⚠️ Current Model Behavior
+
+The model is tuned as a screening system and prioritizes safety.
+
+Current behavior:
+
+- works best on lesion-focused close-up images
+- may produce false positives on difficult benign cases
+- may reject body-part images as Invalid
+- intended as a screening aid only
+
+---
+
+## 📷 Demo Sample Images
+
+Sample images available:
+
+```text
+sample_images/
+├── benign/
+├── malignant/
+└── invalid/
+```
+
+The frontend supports:
+
+**Choose from sample folder**
+
+This helps users test the project without uploading personal images.
+
+---
+
+## ⚙️ Local Setup
+
+### Install dependencies
+
+```bash
 pip install -r requirements.txt
 ```
 
-### 2. Run the backend
+### Run backend
 
-```powershell
+```bash
 python -m uvicorn backend.main:app --reload
 ```
 
-### 3. Run the frontend
+### Run frontend
 
-```powershell
+```bash
 streamlit run frontend/app.py
 ```
 
-## Deployment
+---
 
-### Option 1: Render for backend + frontend
+## 🌐 Deployment
 
-This repo includes [render.yaml](./render.yaml).
+### Option 1
+
+Render for frontend + backend
 
 Steps:
-- push the repo to GitHub
-- create a new Blueprint in Render
-- Render will provision the frontend and backend services
 
-### Option 2: Render backend + Streamlit Community Cloud frontend
+- Push repository to GitHub
+- Create Blueprint on Render
+- Render provisions services automatically
 
-Backend on Render:
-- Build command: `pip install -r requirements.txt`
-- Start command: `uvicorn backend.main:app --host 0.0.0.0 --port $PORT`
+---
 
-Frontend on Streamlit Community Cloud:
-- main file: `frontend/app.py`
-- add this secret:
+### Option 2
 
-```toml
-BACKEND_URL = "https://your-backend-service.onrender.com"
+Backend:
+
+Render
+
+Frontend:
+
+Streamlit Community Cloud
+
+Backend settings:
+
+```bash
+pip install -r requirements.txt
+uvicorn backend.main:app --host 0.0.0.0 --port $PORT
 ```
 
-Reference file:
-- [`.streamlit/secrets.toml.example`](./.streamlit/secrets.toml.example)
+Frontend secret:
 
-## Repository Structure
+```env
+BACKEND_URL=https://your-backend-service.onrender.com
+```
+
+---
+
+## 📁 Repository Structure
 
 ```text
 backend/
-  main.py
-  predictor.py
+│   main.py
+│   predictor.py
+│
 frontend/
-  app.py
+│   app.py
+│
 models/
-  best_model.pth
-  best_model_meta.json
+│   best_model.pth
+│   best_model_meta.json
+│
 training/
-  train_model.py
+│   train_model.py
+│
 sample_images/
-  benign/
-  malignant/
-  invalid/
+│   ├── benign/
+│   ├── malignant/
+│   └── invalid/
 ```
 
-## Future Improvements
+---
 
-- better benign vs malignant precision
-- more hard benign examples to reduce false positives
-- more real-world invalid images
-- calibration and uncertainty tuning
-- lesion localization / segmentation before classification
-- lighter deployment model for faster inference
+## 🚀 Future Improvements
 
-## Disclaimer
+Planned improvements:
 
-This tool is for educational and screening purposes only. It is not a confirmed medical diagnosis.
+- improve benign vs malignant precision
+- add more hard benign examples
+- improve invalid image handling
+- uncertainty calibration
+- lesion localization before classification
+- faster lightweight deployment model
+
+---
+
+## ⚠️ Disclaimer
+
+This project is intended for educational and screening purposes only.
+
+It is not a confirmed medical diagnosis system and should not replace professional medical advice.
+
+---
+
+## 📖 Learning Journey Note
+
+This repository represents part of my learning journey in AI-assisted development.
+
+The focus was understanding:
+
+- model workflows
+- deployment concepts
+- backend integration
+- practical AI application building
+- real-world project structure
