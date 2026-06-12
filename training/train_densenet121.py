@@ -414,8 +414,8 @@ def main():
     data_dir = os.getenv("SKIN_CANCER_DATA_DIR", "data/skin_cancer")
     train_root = os.path.join(data_dir, "train")
     test_root = os.path.join(data_dir, "test")
-    model_save_path = "models/best_model.pth"
-    metadata_save_path = "models/best_model_meta.json"
+    model_save_path = "models/densenet121_skin_lesion_model.pth"
+    metadata_save_path = "models/densenet121_skin_lesion_model_meta.json"
 
     os.makedirs("models", exist_ok=True)
 

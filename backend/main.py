@@ -1,6 +1,6 @@
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from backend.predictor import predict_image_bytes
+from backend.inference_service import predict_image_bytes
 
 app = FastAPI(title="Skin Cancer Screening API")
 

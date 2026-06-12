@@ -57,19 +57,19 @@ The complete project flow includes:
 backend/
   __init__.py
   main.py
-  predictor.py
+  inference_service.py
 
 frontend/
   app.py
 
 models/
-  best_model.pth
-  best_model_meta.json
+  densenet121_skin_lesion_model.pth
+  densenet121_skin_lesion_model_meta.json
 
 training/
-  analyze_dataset.py
-  predict_single.py
-  train_model.py
+  audit_dataset.py
+  predict_single_image.py
+  train_densenet121.py
 
 sample_images/
   benign/
@@ -113,7 +113,7 @@ The main lesion classes come from dermoscopic images. Additional invalid example
 The dataset can be inspected using:
 
 ```powershell
-python training/analyze_dataset.py
+python training/audit_dataset.py
 ```
 
 This checks:
@@ -131,14 +131,14 @@ This step helps verify the dataset before training.
 The main training pipeline is:
 
 ```powershell
-python training/train_model.py
+python training/train_densenet121.py
 ```
 
 You can use a custom dataset path:
 
 ```powershell
 $env:SKIN_CANCER_DATA_DIR="G:\My Drive\skin_cancer_dataset"
-python training/train_model.py
+python training/train_densenet121.py
 ```
 
 Training includes:
@@ -164,13 +164,13 @@ The model uses ImageNet-pretrained `DenseNet121`. Its classifier is replaced wit
 After training, the best model is saved as:
 
 ```text
-models/best_model.pth
+models/densenet121_skin_lesion_model.pth
 ```
 
 Model metadata is saved as:
 
 ```text
-models/best_model_meta.json
+models/densenet121_skin_lesion_model_meta.json
 ```
 
 The metadata currently stores:
@@ -203,19 +203,19 @@ Validation malignant F1-score: 0.9087
 For local model testing without running the web app:
 
 ```powershell
-python training/predict_single.py
+python training/predict_single_image.py
 ```
 
 You can override the image path:
 
 ```powershell
 $env:PREDICT_IMAGE_PATH="G:\My Drive\skin_cancer_dataset\test\benign\2.jpg"
-python training/predict_single.py
+python training/predict_single_image.py
 ```
 
 ## Backend API
 
-The backend is implemented in `backend/main.py` and `backend/predictor.py`.
+The backend is implemented in `backend/main.py` and `backend/inference_service.py`.
 
 Run locally:
 

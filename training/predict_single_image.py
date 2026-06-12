@@ -10,8 +10,8 @@ from torchvision import models, transforms
 # =========================
 # Config
 # =========================
-MODEL_PATH = "models/best_model.pth"
-MODEL_META_PATH = "models/best_model_meta.json"
+MODEL_PATH = "models/densenet121_skin_lesion_model.pth"
+MODEL_META_PATH = "models/densenet121_skin_lesion_model_meta.json"
 DATASET_ROOT = os.getenv("SKIN_CANCER_DATA_DIR", "data/skin_cancer")
 IMAGE_PATH = os.getenv(
     "PREDICT_IMAGE_PATH",
