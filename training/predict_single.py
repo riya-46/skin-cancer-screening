@@ -12,7 +12,11 @@ from torchvision import models, transforms
 # =========================
 MODEL_PATH = "models/best_model.pth"
 MODEL_META_PATH = "models/best_model_meta.json"
-IMAGE_PATH = "C:/Users/LENOVO/skin-cancer-screening/data/skin_cancer/test/benign/2.jpg"
+DATASET_ROOT = os.getenv("SKIN_CANCER_DATA_DIR", "data/skin_cancer")
+IMAGE_PATH = os.getenv(
+    "PREDICT_IMAGE_PATH",
+    os.path.join(DATASET_ROOT, "test", "benign", "2.jpg"),
+)
 DEFAULT_IMG_SIZE = 300
 DEFAULT_CLASS_NAMES = ["benign", "malignant"]
 DEFAULT_MALIGNANT_THRESHOLD = 0.75

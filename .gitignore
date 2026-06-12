@@ -7,3 +7,4 @@ models/*
 !models/best_model_meta.json
 .streamlit/*
 !.streamlit/secrets.toml.example
+.cache/

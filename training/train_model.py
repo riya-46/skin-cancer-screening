@@ -411,13 +411,15 @@ def main():
     # -------------------------
     # Paths
     # -------------------------
-    data_dir = "data/skin_cancer"
+    data_dir = os.getenv("SKIN_CANCER_DATA_DIR", "data/skin_cancer")
     train_root = os.path.join(data_dir, "train")
     test_root = os.path.join(data_dir, "test")
     model_save_path = "models/best_model.pth"
     metadata_save_path = "models/best_model_meta.json"
 
     os.makedirs("models", exist_ok=True)
+
+    print("Dataset root:", data_dir)
 
     class_names = discover_class_names([train_root, test_root])
     class_to_idx = {class_name: idx for idx, class_name in enumerate(class_names)}

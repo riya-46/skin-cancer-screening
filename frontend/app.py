@@ -1,950 +1,1656 @@
+import hashlib
 import os
+import re
 import time
+import zipfile
+from html import escape
 from io import BytesIO
+from pathlib import Path
+
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
-from PIL import Image
+from PIL import Image, ImageOps, UnidentifiedImageError
 
-# =========================
-# Page config
-# =========================
-st.set_page_config(
-    page_title="Skin Cancer Screening",
-    page_icon=":stethoscope:",
-    layout="wide"
-)
 
-# =========================
-# Backend URL
-# =========================
-BACKEND_HOSTPORT = os.getenv("BACKEND_HOSTPORT", "").strip()
-BACKEND_URL = os.getenv("BACKEND_URL", "").strip()
-if not BACKEND_URL and BACKEND_HOSTPORT:
-    BACKEND_URL = f"http://{BACKEND_HOSTPORT}"
-if not BACKEND_URL:
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+CLASS_PRIORITY = ["benign", "malignant", "invalid", "unknown", "not_skin_lesion"]
+SPLIT_ALIASES = {
+    "train": "train",
+    "test": "test",
+    "val": "validation",
+    "valid": "validation",
+    "validation": "validation",
+}
+DEFAULT_LIBRARY_ROOT = Path("sample_images")
+CACHE_ROOT = Path(".cache/demo_library")
+DEFAULT_BACKEND_URL = "http://127.0.0.1:8000"
+
+
+def get_setting(name: str, default: str = "") -> str:
+    value = os.getenv(name, "").strip()
+    if value:
+        return value
+
     try:
-        BACKEND_URL = st.secrets["BACKEND_URL"].strip()
+        secret_value = st.secrets[name]
     except Exception:
-        BACKEND_URL = "http://127.0.0.1:8000"
+        return default
 
-# =========================
-# Helpers
-# =========================
-def format_percent(prob: float) -> str:
-    percent = prob * 100
-    if percent >= 99.995:
-        return "99.99%+"
-    if percent <= 0.005:
-        return "<0.01%"
-    return f"{percent:.2f}%"
-
-def get_risk_color(risk_level: str) -> str:
-    if risk_level == "Low Risk":
-        return "#22c55e"
-    if risk_level == "Suspicious":
-        return "#f59e0b"
-    if risk_level == "Invalid Image":
-        return "#64748b"
-    return "#ef4444"
+    if secret_value is None:
+        return default
+    return str(secret_value).strip() or default
 
 
-IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
-SAMPLE_ROOT = "sample_images"
+def inspect_library_config() -> dict[str, str]:
+    local_dir = get_setting("DEMO_LIBRARY_DIR")
+    drive_folder_id = get_setting("DEMO_LIBRARY_DRIVE_FOLDER_ID")
+    drive_folder_url = get_setting("DEMO_LIBRARY_DRIVE_FOLDER_URL")
+    drive_file_id = get_setting("DEMO_LIBRARY_DRIVE_FILE_ID")
+    drive_url = get_setting("DEMO_LIBRARY_DRIVE_URL")
+    label = get_setting("DEMO_LIBRARY_LABEL")
+
+    if local_dir:
+        return {
+            "mode": "directory",
+            "label": label or "Connected dataset folder",
+            "directory": local_dir,
+            "drive_folder_id": "",
+            "drive_folder_url": "",
+            "drive_file_id": "",
+            "drive_url": "",
+        }
+
+    if drive_folder_id or drive_folder_url:
+        return {
+            "mode": "drive_folder",
+            "label": label or "Google Drive folder dataset",
+            "directory": "",
+            "drive_folder_id": drive_folder_id,
+            "drive_folder_url": drive_folder_url,
+            "drive_file_id": "",
+            "drive_url": "",
+        }
+
+    if drive_file_id or drive_url:
+        return {
+            "mode": "drive",
+            "label": label or "Google Drive dataset",
+            "directory": "",
+            "drive_folder_id": "",
+            "drive_folder_url": "",
+            "drive_file_id": drive_file_id,
+            "drive_url": drive_url,
+        }
+
+    return {
+        "mode": "bundled",
+        "label": label or "Bundled image library",
+        "directory": str(DEFAULT_LIBRARY_ROOT),
+        "drive_folder_id": "",
+        "drive_folder_url": "",
+        "drive_file_id": "",
+        "drive_url": "",
+    }
+
+
+def resolve_backend_url() -> str:
+    backend_url = get_setting("BACKEND_URL")
+    if backend_url:
+        return backend_url
+
+    backend_hostport = get_setting("BACKEND_HOSTPORT")
+    if backend_hostport:
+        return f"http://{backend_hostport}"
+
+    return DEFAULT_BACKEND_URL
+
+
+def extract_drive_file_id(value: str) -> str:
+    candidate = value.strip()
+    if not candidate:
+        return ""
+
+    if re.fullmatch(r"[A-Za-z0-9_-]{20,}", candidate):
+        return candidate
+
+    patterns = [
+        r"/file/d/([A-Za-z0-9_-]+)",
+        r"[?&]id=([A-Za-z0-9_-]+)",
+        r"/d/([A-Za-z0-9_-]+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, candidate)
+        if match:
+            return match.group(1)
+
+    return ""
+
+
+def extract_drive_folder_id(value: str) -> str:
+    candidate = value.strip()
+    if not candidate:
+        return ""
+
+    if re.fullmatch(r"[A-Za-z0-9_-]{20,}", candidate):
+        return candidate
+
+    patterns = [
+        r"/folders/([A-Za-z0-9_-]+)",
+        r"[?&]id=([A-Za-z0-9_-]+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, candidate)
+        if match:
+            return match.group(1)
+
+    return ""
+
+
+def is_drive_url(value: str) -> bool:
+    return "drive.google.com" in value.lower()
+
+
+def is_drive_folder_url(value: str) -> bool:
+    lower_value = value.lower()
+    return "drive.google.com" in lower_value and "/folders/" in lower_value
+
+
+def get_confirm_token(response: requests.Response) -> str:
+    for cookie_name, cookie_value in response.cookies.items():
+        if cookie_name.startswith("download_warning"):
+            return cookie_value
+
+    if "text/html" not in response.headers.get("Content-Type", "").lower():
+        return ""
+
+    html = response.text
+    patterns = [
+        r'name="confirm" value="([^"]+)"',
+        r"confirm=([0-9A-Za-z_]+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, html)
+        if match:
+            return match.group(1)
+
+    return ""
+
+
+def stream_to_file(response: requests.Response, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("wb") as output_file:
+        for chunk in response.iter_content(chunk_size=1024 * 256):
+            if chunk:
+                output_file.write(chunk)
+
+
+def download_google_drive_file(source_value: str, destination: Path) -> None:
+    file_id = extract_drive_file_id(source_value)
+    if not file_id:
+        raise RuntimeError(
+            "Google Drive file id detect nahi hua. Public share link ya file id set karo."
+        )
+
+    session = requests.Session()
+    download_url = "https://drive.google.com/uc?export=download"
+    response = session.get(
+        download_url,
+        params={"id": file_id},
+        stream=True,
+        timeout=180,
+    )
+    response.raise_for_status()
+
+    token = get_confirm_token(response)
+    if token:
+        response.close()
+        response = session.get(
+            download_url,
+            params={"id": file_id, "confirm": token},
+            stream=True,
+            timeout=180,
+        )
+        response.raise_for_status()
+
+    content_type = response.headers.get("Content-Type", "").lower()
+    content_disposition = response.headers.get("Content-Disposition", "").lower()
+    if "text/html" in content_type and ".zip" not in content_disposition:
+        response.close()
+        raise RuntimeError(
+            "Google Drive se zip download nahi hui. File ko 'Anyone with the link' access do."
+        )
+
+    stream_to_file(response, destination)
+    response.close()
+
+
+def download_remote_file(source_url: str, destination: Path) -> None:
+    response = requests.get(source_url, stream=True, timeout=180)
+    response.raise_for_status()
+    stream_to_file(response, destination)
+    response.close()
+
+
+def ensure_archive_is_zip(archive_path: Path) -> None:
+    if not zipfile.is_zipfile(archive_path):
+        raise RuntimeError(
+            "Configured dataset archive zip format me nahi hai. Google Drive par zip upload karo."
+        )
+
+
+def prepare_drive_library(drive_file_id: str, drive_url: str) -> str:
+    source_key = drive_file_id or drive_url
+    cache_key = hashlib.sha1(source_key.encode("utf-8")).hexdigest()[:12]
+    source_root = CACHE_ROOT / cache_key
+    archive_path = source_root / "library.zip"
+    extract_root = source_root / "extracted"
+    ready_marker = source_root / ".ready"
+
+    source_root.mkdir(parents=True, exist_ok=True)
+
+    if not archive_path.exists():
+        if drive_file_id:
+            download_google_drive_file(drive_file_id, archive_path)
+        else:
+            if is_drive_url(drive_url):
+                download_google_drive_file(drive_url, archive_path)
+            else:
+                download_remote_file(drive_url, archive_path)
+
+    ensure_archive_is_zip(archive_path)
+
+    if not ready_marker.exists():
+        extract_root.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(archive_path) as archive:
+            archive.extractall(extract_root)
+        ready_marker.write_text("ready", encoding="utf-8")
+
+    return str(extract_root.resolve())
+
+
+def count_supported_images(root: Path) -> int:
+    if not root.exists():
+        return 0
+
+    return sum(
+        1
+        for file_path in root.rglob("*")
+        if file_path.is_file() and file_path.suffix.lower() in IMAGE_EXTENSIONS
+    )
+
+
+def prepare_drive_folder_library(
+    drive_folder_id: str,
+    drive_folder_url: str,
+) -> dict[str, str]:
+    source_key = drive_folder_id or drive_folder_url
+    cache_key = hashlib.sha1(source_key.encode("utf-8")).hexdigest()[:12]
+    source_root = CACHE_ROOT / f"folder_{cache_key}"
+    extract_root = source_root / "extracted"
+    ready_marker = source_root / ".ready"
+    partial_marker = source_root / ".partial_warning"
+
+    if ready_marker.exists():
+        return {"root": str(extract_root.resolve()), "warning": ""}
+
+    if partial_marker.exists() and count_supported_images(extract_root) > 0:
+        return {
+            "root": str(extract_root.resolve()),
+            "warning": partial_marker.read_text(encoding="utf-8").strip(),
+        }
+
+    source_root.mkdir(parents=True, exist_ok=True)
+    extract_root.mkdir(parents=True, exist_ok=True)
+
+    folder_id = extract_drive_folder_id(source_key)
+    if drive_folder_url:
+        folder_url = drive_folder_url.strip()
+    elif folder_id:
+        folder_url = f"https://drive.google.com/drive/folders/{folder_id}"
+    else:
+        raise RuntimeError(
+            "Google Drive folder id detect nahi hua. Public folder link ya folder id set karo."
+        )
+
+    try:
+        import gdown
+    except ImportError as exc:
+        raise RuntimeError(
+            "Google Drive folder support ke liye `gdown` install hona chahiye."
+        ) from exc
+
+    download_kwargs = {
+        "output": str(extract_root),
+        "quiet": True,
+    }
+    if folder_id:
+        folder_items = gdown.download_folder(
+            id=folder_id,
+            skip_download=True,
+            **download_kwargs,
+        )
+    else:
+        folder_items = gdown.download_folder(
+            url=folder_url,
+            skip_download=True,
+            **download_kwargs,
+        )
+
+    if not folder_items:
+        raise RuntimeError(
+            "Google Drive folder se files load nahi hui. Folder ko 'Anyone with the link' access do."
+        )
+
+    skipped_files: list[str] = []
+
+    for folder_item in folder_items:
+        local_path = Path(folder_item.local_path)
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if local_path.suffix:
+            download_output = str(local_path)
+        else:
+            download_output = str(local_path.parent) + os.sep
+
+        try:
+            gdown.download(
+                url=f"https://drive.google.com/uc?id={folder_item.id}",
+                output=download_output,
+                quiet=True,
+                resume=True,
+            )
+        except Exception:
+            skipped_files.append(folder_item.path)
+
+    image_count = count_supported_images(extract_root)
+    if image_count == 0:
+        raise RuntimeError(
+            "Google Drive folder se image files load nahi hui. Folder ko 'Anyone with the link' access do ya dataset zip/local folder use karo."
+        )
+
+    if skipped_files:
+        warning = (
+            f"Google Drive folder partially load hua. {len(skipped_files)} file(s) access nahi hui, "
+            "isliye abhi available images hi dikhayi ja rahi hain."
+        )
+        partial_marker.write_text(warning, encoding="utf-8")
+        return {"root": str(extract_root.resolve()), "warning": warning}
+
+    if partial_marker.exists():
+        partial_marker.unlink()
+    ready_marker.write_text("ready", encoding="utf-8")
+    return {"root": str(extract_root.resolve()), "warning": ""}
+
+
+@st.cache_resource(show_spinner=False)
+def resolve_library_root(config: tuple[str, str, str, str, str, str]) -> dict[str, str]:
+    mode, directory, drive_folder_id, drive_folder_url, drive_file_id, drive_url = config
+
+    if mode == "directory":
+        dataset_root = Path(directory).expanduser()
+        if not dataset_root.exists():
+            raise FileNotFoundError(
+                f"Configured dataset folder nahi mila: {dataset_root}"
+            )
+        return {"root": str(dataset_root.resolve()), "mode": mode}
+
+    if mode == "drive_folder":
+        drive_folder_library = prepare_drive_folder_library(
+            drive_folder_id,
+            drive_folder_url,
+        )
+        return {
+            "root": drive_folder_library["root"],
+            "mode": mode,
+            "warning": drive_folder_library["warning"],
+        }
+
+    if mode == "drive":
+        return {
+            "root": prepare_drive_library(drive_file_id, drive_url),
+            "mode": mode,
+        }
+
+    dataset_root = DEFAULT_LIBRARY_ROOT
+    if not dataset_root.exists():
+        raise FileNotFoundError(
+            "Bundled image library missing hai. `sample_images/` ya external dataset configure karo."
+        )
+    return {"root": str(dataset_root.resolve()), "mode": mode}
+
+
+def infer_split_name(relative_path: Path) -> str:
+    for part in relative_path.parts[:-1]:
+        normalized = part.lower()
+        if normalized in SPLIT_ALIASES:
+            return SPLIT_ALIASES[normalized]
+    return "library"
+
+
+def infer_class_name(relative_path: Path) -> str:
+    folders = [part.lower() for part in relative_path.parts[:-1]]
+
+    for candidate in CLASS_PRIORITY:
+        if candidate in folders:
+            return candidate
+
+    for part in reversed(folders):
+        if part not in SPLIT_ALIASES and part not in {"images", "image", "dataset", "archive"}:
+            return part
+
+    return "unlabeled"
+
+
+def prettify_label(value: str) -> str:
+    return value.replace("_", " ").replace("-", " ").title()
 
 
 @st.cache_data(show_spinner=False)
-def get_sample_image_options():
-    if not os.path.isdir(SAMPLE_ROOT):
-        return []
+def build_library_index(root_str: str) -> list[dict[str, str]]:
+    dataset_root = Path(root_str)
+    entries: list[dict[str, str]] = []
 
-    sample_options = []
-    for class_name in sorted(os.listdir(SAMPLE_ROOT)):
-        class_dir = os.path.join(SAMPLE_ROOT, class_name)
-        if not os.path.isdir(class_dir):
+    for file_path in dataset_root.rglob("*"):
+        if not file_path.is_file():
+            continue
+        if file_path.suffix.lower() not in IMAGE_EXTENSIONS:
             continue
 
-        filenames = sorted(
-            name for name in os.listdir(class_dir)
-            if os.path.isfile(os.path.join(class_dir, name))
-            and name.lower().endswith(IMAGE_EXTENSIONS)
-        )
+        relative_path = file_path.relative_to(dataset_root)
+        class_name = infer_class_name(relative_path)
+        split_name = infer_split_name(relative_path)
+        stable_key = hashlib.md5(str(relative_path).encode("utf-8")).hexdigest()[:12]
 
-        for filename in filenames:
-            sample_options.append({
-                "label": f"{class_name.title()} / {filename}",
-                "path": os.path.join(class_dir, filename),
+        entries.append(
+            {
+                "key": stable_key,
+                "path": str(file_path.resolve()),
+                "filename": file_path.name,
+                "relative_path": str(relative_path).replace("\\", "/"),
                 "class_name": class_name,
-                "filename": filename,
-            })
-
-    return sample_options
-
-# =========================
-# Session state
-# =========================
-if "prediction_result" not in st.session_state:
-    st.session_state.prediction_result = None
-
-if "error_message" not in st.session_state:
-    st.session_state.error_message = None
-
-if "show_result" not in st.session_state:
-    st.session_state.show_result = False
-
-if "scroll_to_result" not in st.session_state:
-    st.session_state.scroll_to_result = False
-
-if "uploader_key" not in st.session_state:
-    st.session_state.uploader_key = 0
-
-# =========================
-# Styling
-# =========================
-st.markdown(
-    """
-    <style>
-    [data-testid="stAppViewContainer"] {
-        background:
-            radial-gradient(circle at 8% 10%, rgba(14, 165, 233, 0.16), transparent 24%),
-            radial-gradient(circle at 88% 8%, rgba(244, 114, 182, 0.14), transparent 20%),
-            radial-gradient(circle at 50% 38%, rgba(99, 102, 241, 0.10), transparent 28%),
-            linear-gradient(180deg, #fffaf5 0%, #f8fbff 42%, #eef6ff 100%);
-    }
-
-    [data-testid="stHeader"] {
-        background: transparent;
-    }
-
-    .block-container {
-        max-width: 1180px;
-        padding-top: 1.8rem;
-        padding-bottom: 3rem;
-    }
-
-    :root {
-        --radius-xl: 30px;
-        --radius-lg: 24px;
-        --radius-md: 18px;
-        --shadow: 0 24px 60px rgba(15, 23, 42, 0.12);
-        --shadow-soft: 0 16px 36px rgba(37, 99, 235, 0.12);
-        --section-gap: 2.6rem;
-    }
-
-    @media (prefers-color-scheme: light) {
-        :root {
-            --page-shell: transparent;
-            --card-bg: rgba(255, 255, 255, 0.82);
-            --card-bg-strong: linear-gradient(135deg, rgba(255,255,255,0.94) 0%, rgba(240,249,255,0.92) 52%, rgba(238,242,255,0.90) 100%);
-            --card-border: rgba(59, 130, 246, 0.12);
-            --title: #0f172a;
-            --text: #334155;
-            --muted: #64748b;
-            --soft: #eff6ff;
-            --accent: linear-gradient(135deg, #0ea5e9 0%, #2563eb 52%, #7c3aed 100%);
-            --accent-soft: linear-gradient(135deg, rgba(14,165,233,0.15) 0%, rgba(124,58,237,0.14) 100%);
-            --hero: linear-gradient(135deg, rgba(255,255,255,0.92) 0%, rgba(236, 253, 245, 0.82) 28%, rgba(239,246,255,0.90) 62%, rgba(245,243,255,0.88) 100%);
-            --hero-orb-1: rgba(14, 165, 233, 0.16);
-            --hero-orb-2: rgba(124, 58, 237, 0.14);
-            --tech: rgba(247, 250, 255, 0.94);
-            --uploader-bg: rgba(248, 250, 252, 0.92);
-            --uploader-border: rgba(14, 165, 233, 0.26);
-            --input-chip: rgba(14, 165, 233, 0.10);
-            --heading-accent: #0f172a;
-            --heading-sub: #475569;
-            --progress-track: rgba(148, 163, 184, 0.22);
-            --shell-border: transparent;
-        }
-    }
-
-    @media (prefers-color-scheme: dark) {
-        [data-testid="stAppViewContainer"] {
-            background:
-                radial-gradient(circle at 8% 10%, rgba(14, 165, 233, 0.18), transparent 22%),
-                radial-gradient(circle at 88% 8%, rgba(99, 102, 241, 0.18), transparent 22%),
-                radial-gradient(circle at 48% 36%, rgba(168, 85, 247, 0.08), transparent 24%),
-                linear-gradient(180deg, #020617 0%, #0f172a 55%, #111827 100%);
-        }
-
-        :root {
-            --page-shell: rgba(15, 23, 42, 0.46);
-            --card-bg: rgba(15, 23, 42, 0.80);
-            --card-bg-strong: linear-gradient(135deg, rgba(15,23,42,0.92) 0%, rgba(17,24,39,0.88) 100%);
-            --card-border: rgba(148, 163, 184, 0.18);
-            --title: #f8fafc;
-            --text: #e2e8f0;
-            --muted: #94a3b8;
-            --soft: #0b1120;
-            --accent: linear-gradient(135deg, #0ea5e9 0%, #2563eb 45%, #7c3aed 100%);
-            --accent-soft: linear-gradient(135deg, rgba(14,165,233,0.14) 0%, rgba(124,58,237,0.16) 100%);
-            --hero: linear-gradient(135deg, rgba(15,23,42,0.92) 0%, rgba(17,24,39,0.88) 100%);
-            --hero-orb-1: rgba(14, 165, 233, 0.14);
-            --hero-orb-2: rgba(124, 58, 237, 0.16);
-            --tech: rgba(15, 23, 42, 0.88);
-            --uploader-bg: rgba(15, 23, 42, 0.82);
-            --uploader-border: rgba(56, 189, 248, 0.2);
-            --input-chip: rgba(14, 165, 233, 0.12);
-            --heading-accent: #f8fafc;
-            --heading-sub: #cbd5e1;
-            --progress-track: rgba(148, 163, 184, 0.18);
-            --shell-border: rgba(148, 163, 184, 0.1);
-        }
-    }
-
-    .section-shell {
-        position: relative;
-        margin-top: var(--section-gap);
-        padding: 0;
-        border-radius: 32px;
-        background: var(--page-shell);
-        border: 1px solid var(--shell-border);
-    }
-
-    @media (prefers-color-scheme: dark) {
-        .section-shell {
-            padding: 1.25rem;
-            box-shadow: var(--shadow);
-            backdrop-filter: blur(18px);
-            -webkit-backdrop-filter: blur(18px);
-            overflow: hidden;
-        }
-    }
-
-    .section-shell + .section-shell {
-        margin-top: var(--section-gap);
-    }
-
-    .hero-card {
-        background: var(--hero);
-        border: 1px solid var(--card-border);
-        border-radius: var(--radius-xl);
-        padding: 44px 34px;
-        backdrop-filter: blur(18px);
-        -webkit-backdrop-filter: blur(18px);
-        text-align: center;
-        position: relative;
-        overflow: hidden;
-        box-shadow: var(--shadow-soft);
-    }
-
-    .hero-card::before,
-    .hero-card::after {
-        content: "";
-        position: absolute;
-        border-radius: 999px;
-        filter: blur(8px);
-        z-index: 0;
-    }
-
-    .hero-card::before {
-        width: 220px;
-        height: 220px;
-        background: var(--hero-orb-1);
-        top: -84px;
-        left: -42px;
-    }
-
-    .hero-card::after {
-        width: 260px;
-        height: 260px;
-        background: var(--hero-orb-2);
-        right: -72px;
-        bottom: -124px;
-    }
-
-    .hero-card > * {
-        position: relative;
-        z-index: 1;
-    }
-
-    .hero-title {
-        color: var(--title);
-        font-size: clamp(2.4rem, 4vw, 3.6rem);
-        font-weight: 800;
-        line-height: 1.15;
-        margin-bottom: 0.9rem;
-        letter-spacing: -0.03em;
-    }
-
-    .hero-subtitle {
-        color: var(--text);
-        font-size: 1.05rem;
-        line-height: 1.8;
-        max-width: 780px;
-        margin: 0 auto;
-    }
-
-    .hero-strip {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.55rem;
-        padding: 0.5rem 0.9rem;
-        border-radius: 999px;
-        background: var(--input-chip);
-        border: 1px solid var(--card-border);
-        color: var(--muted);
-        font-size: 0.9rem;
-        font-weight: 700;
-        letter-spacing: 0.02em;
-        margin-bottom: 1rem;
-    }
-
-    .hero-mark {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 72px;
-        height: 72px;
-        border-radius: 22px;
-        margin: 0 auto 1rem;
-        background: var(--accent-soft);
-        border: 1px solid var(--card-border);
-        font-size: 2rem;
-        box-shadow: var(--shadow-soft);
-    }
-
-    .section-heading {
-        color: var(--heading-accent);
-        text-align: center;
-        font-size: 2.2rem;
-        font-weight: 800;
-        line-height: 1.2;
-        margin-top: 0;
-        margin-bottom: 0.65rem;
-        letter-spacing: -0.02em;
-    }
-
-    .section-subtext {
-        color: var(--heading-sub);
-        text-align: center;
-        font-size: 1rem;
-        margin-bottom: 0.45rem;
-    }
-
-    .main-card {
-        background: var(--card-bg);
-        border: 1px solid var(--card-border);
-        border-radius: var(--radius-xl);
-        padding: 30px;
-        backdrop-filter: blur(18px);
-        -webkit-backdrop-filter: blur(18px);
-        margin-top: 1.4rem;
-        box-shadow: var(--shadow-soft);
-    }
-
-    .result-card {
-        background: var(--card-bg-strong);
-        border: 1px solid var(--card-border);
-        border-radius: var(--radius-xl);
-        padding: 30px;
-        backdrop-filter: blur(18px);
-        -webkit-backdrop-filter: blur(18px);
-        margin-bottom: 20px;
-        box-shadow: var(--shadow-soft);
-    }
-
-    .result-title {
-        color: var(--title);
-        font-size: 2.6rem;
-        font-weight: 800;
-        margin-bottom: 0.3rem;
-        letter-spacing: -0.02em;
-    }
-
-    .result-line {
-        color: var(--text);
-        font-size: 1.08rem;
-        margin-bottom: 12px;
-        line-height: 1.7;
-    }
-
-    .risk-badge {
-        display: inline-block;
-        padding: 0.38rem 0.9rem;
-        border-radius: 999px;
-        font-size: 0.92rem;
-        font-weight: 800;
-        margin-left: 0.35rem;
-        vertical-align: middle;
-    }
-
-    .mini-card {
-        background: var(--card-bg-strong);
-        border: 1px solid var(--card-border);
-        border-radius: var(--radius-lg);
-        padding: 22px;
-        min-height: 132px;
-        backdrop-filter: blur(16px);
-        -webkit-backdrop-filter: blur(16px);
-        box-shadow: var(--shadow-soft);
-    }
-
-    .mini-label {
-        color: var(--muted);
-        font-size: 1rem;
-        margin-bottom: 10px;
-    }
-
-    .mini-value {
-        color: var(--title);
-        font-size: 2.25rem;
-        font-weight: 800;
-        line-height: 1.15;
-    }
-
-    .tech-card {
-        background: var(--tech);
-        border: 1px solid var(--card-border);
-        border-radius: var(--radius-lg);
-        padding: 24px;
-        backdrop-filter: blur(16px);
-        -webkit-backdrop-filter: blur(16px);
-        margin-top: 18px;
-        box-shadow: var(--shadow-soft);
-    }
-
-    .tech-title {
-        color: var(--title);
-        font-size: 1.45rem;
-        font-weight: 800;
-        margin-bottom: 14px;
-    }
-
-    .tech-code {
-        color: var(--text);
-        font-family: Consolas, Monaco, monospace;
-        font-size: 15px;
-        line-height: 1.9;
-        white-space: pre-wrap;
-        overflow-x: auto;
-    }
-
-    .tech-inner {
-        max-width: 820px;
-        margin: 0 auto;
-    }
-
-    .preview-caption {
-        color: var(--muted);
-        text-align: center;
-        font-size: 0.95rem;
-        margin-top: 0.85rem;
-        font-weight: 600;
-    }
-
-    .button-spacer {
-        height: 2.4rem;
-    }
-
-    .progress-label {
-        color: var(--muted);
-        font-size: 0.92rem;
-        margin-top: 0.75rem;
-    }
-
-    .scan-box {
-        background: var(--accent-soft);
-        border: 1px solid var(--card-border);
-        border-radius: 18px;
-        padding: 18px;
-        margin-top: 14px;
-        margin-bottom: 10px;
-    }
-
-    .footer-note {
-        color: var(--muted);
-        text-align: center;
-        font-size: 0.95rem;
-        margin-top: 2rem;
-    }
-
-    .stButton > button {
-        width: 100%;
-        border-radius: 18px;
-        padding: 0.95rem 1rem;
-        font-weight: 800;
-        font-size: 1rem;
-        border: none;
-        background: var(--accent);
-        color: white;
-        box-shadow: 0 16px 30px rgba(37, 99, 235, 0.24);
-        transition: all 0.2s ease-in-out;
-    }
-
-    .stButton > button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 20px 38px rgba(37, 99, 235, 0.28);
-    }
-
-    div[data-testid="stFileUploader"] {
-        border: 1px dashed var(--uploader-border);
-        border-radius: 24px;
-        background: var(--uploader-bg);
-        padding: 0.7rem;
-        box-shadow: inset 0 1px 0 rgba(255,255,255,0.12);
-    }
-
-    div[data-testid="stImage"] img {
-        border-radius: 22px;
-        box-shadow: 0 18px 36px rgba(15,23,42,0.18);
-        border: 1px solid var(--card-border);
-    }
-
-    div[data-testid="stAlert"] {
-        border-radius: 18px;
-    }
-
-    div[data-testid="stProgressBar"] > div > div {
-        background: var(--accent);
-    }
-
-    div[data-testid="stProgressBar"] > div {
-        background: var(--progress-track);
-    }
-
-    .section-anchor {
-        position: relative;
-        top: -24px;
-    }
-
-    .result-grid-gap {
-        margin-top: 1rem;
-    }
-
-    @media (max-width: 900px) {
-        .block-container {
-            padding-top: 1rem;
-            padding-bottom: 2.2rem;
-        }
-
-        .section-shell {
-            padding: 0;
-        }
-
-        .hero-card,
-        .main-card,
-        .result-card,
-        .tech-card {
-            padding: 22px;
-        }
-
-        .mini-card {
-            padding: 18px;
-        }
-
-        .hero-mark {
-            width: 62px;
-            height: 62px;
-        }
-
-        .button-spacer {
-            height: 0;
-        }
-    }
-
-    @media (max-width: 900px) and (prefers-color-scheme: dark) {
-        .section-shell {
-            padding: 0.85rem;
-        }
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-
-# =========================
-# Section 1: Header
-# =========================
-st.markdown(
-    """
-    <div class="section-shell">
-    <div class="hero-card">
-        <div class="hero-mark">🩺</div>
-        <div class="hero-strip">AI Dermatology Screening</div>
-        <div class="hero-title">Skin Cancer Screening System</div>
-        <div class="hero-subtitle">
-            Upload a close-up skin lesion image and receive a fast AI-assisted screening
-            summary with confidence score, risk level, and next-step recommendation.
-        </div>
-    </div>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-
-st.markdown('<div class="section-shell">', unsafe_allow_html=True)
-
-st.markdown('<div class="section-heading">Upload Image</div>', unsafe_allow_html=True)
-st.markdown('<div class="section-subtext">Upload a close-up lesion photo, not a full-arm, face, or general rash image.</div>', unsafe_allow_html=True)
-st.markdown('<div class="section-subtext">Supported formats: JPG, JPEG, PNG</div>', unsafe_allow_html=True)
-st.markdown('<div class="section-subtext">On free hosting, the backend may take around 30-60 seconds to wake up on the first request.</div>', unsafe_allow_html=True)
-
-st.markdown('<div class="main-card">', unsafe_allow_html=True)
-
-sample_options = get_sample_image_options()
-input_mode = st.radio(
-    "Image source",
-    options=["Upload your image", "Choose from sample folder"],
-    horizontal=True,
-    label_visibility="collapsed",
-    key=f"input_mode_{st.session_state.uploader_key}"
-)
-
-uploaded_file = None
-selected_sample = None
-
-if input_mode == "Upload your image":
-    uploaded_file = st.file_uploader(
-        "Choose an image file",
-        type=["jpg", "jpeg", "png"],
-        label_visibility="collapsed",
-        key=f"uploader_{st.session_state.uploader_key}"
-    )
-else:
-    if sample_options:
-        selected_label = st.selectbox(
-            "Choose a sample image",
-            options=[option["label"] for option in sample_options],
-            index=None,
-            placeholder="Select a sample lesion or invalid image",
-            key=f"sample_selector_{st.session_state.uploader_key}"
+                "class_label": prettify_label(class_name),
+                "split_name": split_name,
+                "split_label": prettify_label(split_name),
+            }
         )
-        if selected_label:
-            selected_sample = next(
-                option for option in sample_options
-                if option["label"] == selected_label
-            )
-    else:
-        st.info("Sample folder not found yet. Add demo images inside sample_images/ to use this option.")
 
-image = None
-image_name = None
-image_bytes = None
-image_mime = "image/jpeg"
+    class_order = {name: index for index, name in enumerate(CLASS_PRIORITY)}
+    entries.sort(
+        key=lambda item: (
+            class_order.get(item["class_name"], 99),
+            item["split_name"],
+            item["filename"].lower(),
+        )
+    )
+    return entries
 
-if uploaded_file is not None:
-    image = Image.open(uploaded_file)
-    image_name = uploaded_file.name
-    image_bytes = uploaded_file.getvalue()
-    image_mime = uploaded_file.type or image_mime
-elif selected_sample is not None:
-    with open(selected_sample["path"], "rb") as sample_file:
-        image_bytes = sample_file.read()
-    image = Image.open(BytesIO(image_bytes))
-    image_name = selected_sample["filename"]
 
-analyze = False
-reset = False
+@st.cache_data(show_spinner=False)
+def load_gallery_image(image_path: str) -> Image.Image:
+    with Image.open(image_path) as source_image:
+        return source_image.convert("RGB").copy()
 
-if image is not None:
-    left_col, center_col, right_col = st.columns([1.1, 1.35, 1.1], gap="medium")
 
-    with left_col:
-        st.markdown('<div class="button-spacer"></div>', unsafe_allow_html=True)
-        analyze = st.button("Analyze Image", use_container_width=True)
+@st.cache_data(show_spinner=False)
+def load_gallery_thumbnail(image_path: str) -> Image.Image:
+    with Image.open(image_path) as source_image:
+        fitted_image = ImageOps.fit(
+            source_image.convert("RGB"),
+            (360, 240),
+            method=Image.Resampling.LANCZOS,
+        )
+        return fitted_image.copy()
 
-    with center_col:
-        st.image(image, use_container_width=True)
-        preview_caption = "Image Preview"
-        if selected_sample is not None:
-            preview_caption = f"Sample Preview • {selected_sample['class_name'].title()}"
-        st.markdown(f'<div class="preview-caption">{preview_caption}</div>', unsafe_allow_html=True)
 
-    with right_col:
-        st.markdown('<div class="button-spacer"></div>', unsafe_allow_html=True)
-        reset = st.button("Reset", use_container_width=True)
+def read_gallery_image_bytes(image_path: str) -> bytes:
+    return Path(image_path).read_bytes()
 
-else:
-    analyze = False
-    reset = False
 
-if reset:
+def format_percent(probability: float) -> str:
+    percentage = probability * 100
+    if percentage >= 99.995:
+        return "99.99%+"
+    if percentage <= 0.005:
+        return "<0.01%"
+    return f"{percentage:.2f}%"
+
+
+def scroll_to_anchor(anchor_id: str) -> None:
+    components.html(
+        f"""
+        <script>
+        const scrollToAnchor = () => {{
+            const anchor = window.parent.document.getElementById("{anchor_id}");
+            if (anchor) {{
+                anchor.scrollIntoView({{ behavior: "smooth", block: "start" }});
+            }}
+        }};
+        window.parent.requestAnimationFrame(scrollToAnchor);
+        </script>
+        """,
+        height=0,
+    )
+
+
+def get_risk_style(risk_level: str) -> tuple[str, str]:
+    mapping = {
+        "Low Risk": ("#0f766e", "rgba(15, 118, 110, 0.12)"),
+        "Suspicious": ("#b45309", "rgba(180, 83, 9, 0.14)"),
+        "High Risk": ("#b91c1c", "rgba(185, 28, 28, 0.14)"),
+        "Invalid Image": ("#475569", "rgba(71, 85, 105, 0.14)"),
+    }
+    return mapping.get(risk_level, ("#1f2937", "rgba(31, 41, 55, 0.12)"))
+
+
+def get_library_summary(entries: list[dict[str, str]]) -> dict[str, int]:
+    class_count = len({entry["class_name"] for entry in entries})
+    split_count = len({entry["split_name"] for entry in entries})
+    return {
+        "image_count": len(entries),
+        "class_count": class_count,
+        "split_count": split_count,
+    }
+
+
+def init_session_state() -> None:
+    defaults = {
+        "prediction_result": None,
+        "error_message": None,
+        "show_result": False,
+        "scroll_to_analyze": False,
+        "scroll_to_result": False,
+        "selected_library_path": "",
+        "uploader_key": 0,
+        "library_page": 1,
+        "last_upload_signature": "",
+    }
+
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def reset_workspace() -> None:
     st.session_state.prediction_result = None
     st.session_state.error_message = None
     st.session_state.show_result = False
+    st.session_state.scroll_to_analyze = False
     st.session_state.scroll_to_result = False
+    st.session_state.selected_library_path = ""
+    st.session_state.last_upload_signature = ""
     st.session_state.uploader_key += 1
-    st.rerun()
+    st.session_state.library_page = 1
 
-# =========================
-# Analyze logic + AI scan effect
-# =========================
-if analyze and image_bytes is not None and image_name is not None:
+
+def track_uploaded_file(uploaded_file) -> None:
+    if uploaded_file is None:
+        st.session_state.last_upload_signature = ""
+        st.session_state.scroll_to_analyze = False
+        return
+
+    signature = f"{uploaded_file.name}:{uploaded_file.size}"
+    if signature != st.session_state.last_upload_signature:
+        st.session_state.prediction_result = None
+        st.session_state.error_message = None
+        st.session_state.show_result = False
+        st.session_state.scroll_to_analyze = True
+        st.session_state.scroll_to_result = False
+    st.session_state.last_upload_signature = signature
+
+
+def render_metric_card(title: str, value: str, caption: str) -> None:
+    st.markdown(
+        f"""
+        <div class="metric-card">
+            <div class="metric-label">{escape(title)}</div>
+            <div class="metric-value">{escape(value)}</div>
+            <div class="metric-caption">{escape(caption)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def inject_styles() -> None:
+    st.markdown(
+        """
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+
+        :root {
+            --page-bg: linear-gradient(180deg, #edf2ff 0%, #e8eefb 100%);
+            --card-bg: rgba(255, 255, 255, 0.96);
+            --card-muted-bg: #f7faff;
+            --card-border: #d9e1f1;
+            --card-shadow: 0 18px 42px rgba(76, 93, 129, 0.14);
+            --ink-strong: #13294b;
+            --ink: #40597c;
+            --muted: #7b89a6;
+            --accent: #4f46e5;
+            --accent-strong: #4338ca;
+            --accent-soft: rgba(79, 70, 229, 0.10);
+            --soft-fill: #f9fbff;
+            --soft-line: #cfd8ea;
+            --subtle-line: #e3e9f5;
+            --progress-track: #e6ebf7;
+            --footer-ink: #495f83;
+            --disclaimer-ink: #c72626;
+            --disclaimer-bg: rgba(255, 244, 244, 0.88);
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --page-bg: linear-gradient(180deg, #0b1323 0%, #0f1b30 100%);
+                --card-bg: rgba(18, 28, 48, 0.94);
+                --card-muted-bg: #12203a;
+                --card-border: #243556;
+                --card-shadow: 0 18px 48px rgba(0, 0, 0, 0.38);
+                --ink-strong: #f4f7ff;
+                --ink: #d4ddf4;
+                --muted: #99a8c7;
+                --accent: #8d8aff;
+                --accent-strong: #a7a4ff;
+                --accent-soft: rgba(141, 138, 255, 0.16);
+                --soft-fill: #101a2e;
+                --soft-line: #334666;
+                --subtle-line: #243556;
+                --progress-track: #27354d;
+                --footer-ink: #b9c7e2;
+                --disclaimer-ink: #ff9b9b;
+                --disclaimer-bg: rgba(70, 24, 29, 0.50);
+            }
+        }
+
+        html, body, [class*="css"] {
+            font-family: "Plus Jakarta Sans", "Segoe UI", sans-serif;
+            color: var(--ink);
+        }
+
+        [data-testid="stAppViewContainer"] {
+            background: var(--page-bg);
+        }
+
+        [data-testid="stHeader"] {
+            background: transparent;
+        }
+
+        .block-container {
+            max-width: 1240px;
+            padding-top: 1.8rem;
+            padding-bottom: 2rem;
+        }
+
+        .app-hero {
+            text-align: center;
+            padding: 0.3rem 0 1.65rem;
+        }
+
+        .hero-lockup {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.9rem;
+            color: var(--ink-strong);
+        }
+
+        .hero-icon {
+            width: 52px;
+            height: 52px;
+            color: var(--accent);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .hero-title {
+            font-size: clamp(2.35rem, 4vw, 3.5rem);
+            line-height: 1.05;
+            font-weight: 800;
+            letter-spacing: -0.04em;
+            color: var(--ink-strong);
+            margin: 0;
+        }
+
+        .hero-subtitle {
+            margin-top: 1rem;
+            font-size: 1.08rem;
+            color: var(--ink);
+        }
+
+        .section-card-title {
+            color: var(--ink-strong);
+            font-size: 1.25rem;
+            font-weight: 800;
+            margin-bottom: 0.32rem;
+            letter-spacing: -0.02em;
+            text-align: center;
+        }
+
+        .section-card-copy {
+            color: var(--ink);
+            font-size: 0.98rem;
+            line-height: 1.75;
+            text-align: center;
+            margin-bottom: 1.15rem;
+        }
+
+        .upload-section-intro {
+            padding-top: 0.95rem;
+            padding-bottom: 0.55rem;
+        }
+
+        .layout-gap {
+            height: 2.7rem;
+        }
+
+        div[data-testid="stVerticalBlockBorderWrapper"] {
+            border: 1px solid var(--card-border) !important;
+            border-radius: 26px !important;
+            background: var(--card-bg) !important;
+            box-shadow: var(--card-shadow) !important;
+            padding: 0.55rem !important;
+        }
+
+        .panel-title {
+            color: var(--ink-strong);
+            font-size: 1.28rem;
+            font-weight: 800;
+            margin-bottom: 0.35rem;
+            text-align: center;
+            letter-spacing: -0.02em;
+        }
+
+        .panel-copy {
+            color: var(--ink);
+            font-size: 0.96rem;
+            line-height: 1.75;
+            text-align: center;
+            margin-bottom: 1.15rem;
+        }
+
+        div[data-testid="stRadio"] {
+            border-bottom: 1px solid var(--subtle-line);
+            margin-bottom: 1.35rem;
+            padding-bottom: 0.08rem;
+        }
+
+        div[data-testid="stRadio"] > div {
+            gap: 2rem;
+        }
+
+        div[data-testid="stRadio"] label[data-baseweb="radio"] {
+            background: transparent !important;
+            border: none !important;
+            border-bottom: 3px solid transparent;
+            border-radius: 0 !important;
+            padding: 0 0 0.95rem !important;
+            margin-right: 0 !important;
+            min-height: auto !important;
+        }
+
+        div[data-testid="stRadio"] label[data-baseweb="radio"] > div:first-child {
+            display: none !important;
+        }
+
+        div[data-testid="stRadio"] label[data-baseweb="radio"] p {
+            color: var(--muted) !important;
+            font-size: 1rem !important;
+            font-weight: 700 !important;
+        }
+
+        div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) {
+            border-bottom-color: var(--accent) !important;
+        }
+
+        div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) p {
+            color: var(--accent) !important;
+        }
+
+        div[data-testid="stFileUploaderDropzone"] {
+            background: var(--soft-fill) !important;
+            border: 2px dashed var(--soft-line) !important;
+            border-radius: 24px !important;
+            min-height: 280px;
+            padding: 2rem 1.35rem !important;
+        }
+
+        div[data-testid="stFileUploaderDropzoneInstructions"] > div {
+            color: var(--ink-strong) !important;
+            font-size: 1.08rem !important;
+            font-weight: 700 !important;
+        }
+
+        div[data-testid="stFileUploaderDropzoneInstructions"] small {
+            color: var(--muted) !important;
+            font-size: 0.96rem !important;
+        }
+
+        div[data-testid="stFileUploaderDropzone"] svg {
+            color: var(--muted) !important;
+            fill: var(--muted) !important;
+        }
+
+        div[data-testid="stFileUploaderFile"] {
+            background: var(--card-muted-bg) !important;
+            border: 1px solid var(--card-border) !important;
+            border-radius: 18px !important;
+            margin-top: 0.8rem;
+            padding: 0.15rem 0.1rem;
+        }
+
+        div[data-testid="stFileUploaderFileName"] {
+            color: var(--ink-strong) !important;
+            font-weight: 700 !important;
+        }
+
+        div[data-testid="stFileUploaderFile"] small {
+            color: var(--muted) !important;
+            font-weight: 600 !important;
+        }
+
+        div[data-testid="stFileUploaderFile"] svg,
+        div[data-testid="stFileUploaderDeleteBtn"] button {
+            color: var(--ink-strong) !important;
+            fill: var(--ink-strong) !important;
+        }
+
+        .stButton > button {
+            width: 100%;
+            border-radius: 14px;
+            min-height: 46px;
+            font-weight: 700;
+            font-size: 0.98rem;
+            box-shadow: none;
+        }
+
+        .stButton > button[kind="primary"] {
+            background: linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%);
+            color: #ffffff;
+            border: 1px solid transparent;
+        }
+
+        .stButton > button[kind="secondary"] {
+            background: var(--card-muted-bg);
+            color: var(--ink-strong);
+            border: 1px solid var(--card-border);
+        }
+
+        div[data-baseweb="select"] > div,
+        div[data-baseweb="input"] > div,
+        div[data-baseweb="base-input"] > div {
+            border-radius: 14px !important;
+            border: 1px solid var(--card-border) !important;
+            background: var(--soft-fill) !important;
+            box-shadow: none !important;
+        }
+
+        div[data-baseweb="select"] span,
+        div[data-baseweb="select"] div,
+        div[data-baseweb="input"] input,
+        div[data-baseweb="base-input"] input {
+            color: var(--ink-strong) !important;
+        }
+
+        div[role="listbox"] {
+            background: var(--card-bg) !important;
+            border: 1px solid var(--card-border) !important;
+            color: var(--ink-strong) !important;
+        }
+
+        div[role="option"] {
+            color: var(--ink-strong) !important;
+        }
+
+        div[role="option"][aria-selected="true"] {
+            background: var(--accent-soft) !important;
+        }
+
+        div[data-testid="stImage"] img {
+            border-radius: 20px;
+            border: 1px solid var(--card-border);
+        }
+
+        .sample-caption,
+        div[data-testid="stCaptionContainer"] p,
+        div[data-testid="stFileUploader"] > label p,
+        div[data-testid="stSelectbox"] > label p {
+            color: var(--muted) !important;
+            font-weight: 600 !important;
+        }
+
+        .sample-gallery-title {
+            color: var(--ink-strong);
+            font-size: 1rem;
+            font-weight: 700;
+            margin-bottom: 0.3rem;
+        }
+
+        .sample-gallery-copy {
+            color: var(--muted);
+            font-size: 0.92rem;
+            line-height: 1.6;
+            margin-bottom: 0.9rem;
+        }
+
+        .sample-card-title {
+            color: var(--ink-strong);
+            font-size: 0.92rem;
+            font-weight: 700;
+            margin-top: 0.6rem;
+            line-height: 1.4;
+        }
+
+        .sample-card-meta {
+            color: var(--muted);
+            font-size: 0.82rem;
+            line-height: 1.45;
+            margin-top: 0.18rem;
+            min-height: 2.35rem;
+        }
+
+        .sample-selected-pill {
+            display: inline-flex;
+            align-items: center;
+            margin-top: 0.55rem;
+            margin-bottom: 0.55rem;
+            padding: 0.22rem 0.55rem;
+            border-radius: 999px;
+            background: var(--accent-soft);
+            color: var(--accent);
+            font-size: 0.76rem;
+            font-weight: 700;
+        }
+
+        .selected-preview-title {
+            color: var(--ink-strong);
+            font-size: 1rem;
+            font-weight: 700;
+            margin-top: 1.55rem;
+            margin-bottom: 0.95rem;
+            text-align: center;
+        }
+
+        .preview-meta {
+            color: var(--muted);
+            font-size: 0.95rem;
+            line-height: 1.6;
+            text-align: center;
+            margin-top: 0.85rem;
+        }
+
+        .results-empty {
+            min-height: 250px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            color: var(--muted);
+            gap: 1rem;
+        }
+
+        .results-empty svg {
+            width: 68px;
+            height: 68px;
+            color: var(--muted);
+        }
+
+        .results-empty-copy {
+            font-size: 1rem;
+            color: var(--muted);
+        }
+
+        .result-card {
+            background: var(--card-muted-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 20px;
+            padding: 1.25rem;
+            margin-bottom: 1rem;
+        }
+
+        .status-pill {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.36rem 0.75rem;
+            border-radius: 999px;
+            font-size: 0.84rem;
+            font-weight: 700;
+        }
+
+        .result-headline {
+            color: var(--ink-strong);
+            font-size: clamp(1.75rem, 3.4vw, 2.4rem);
+            line-height: 1.1;
+            font-weight: 800;
+            margin: 0.7rem 0 0.35rem;
+        }
+
+        .result-copy {
+            color: var(--ink);
+            font-size: 0.98rem;
+            line-height: 1.7;
+        }
+
+        .metric-card {
+            background: var(--card-muted-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 18px;
+            padding: 1rem;
+            min-height: 132px;
+        }
+
+        .metric-label {
+            color: var(--muted);
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            font-weight: 700;
+            margin-bottom: 0.8rem;
+        }
+
+        .metric-value {
+            color: var(--ink-strong);
+            font-size: 1.7rem;
+            line-height: 1;
+            font-weight: 800;
+        }
+
+        .metric-caption {
+            color: var(--ink);
+            font-size: 0.9rem;
+            line-height: 1.5;
+            margin-top: 0.65rem;
+        }
+
+        div[data-testid="stProgressBar"] > div {
+            background: var(--progress-track);
+        }
+
+        div[data-testid="stProgressBar"] > div > div {
+            background: linear-gradient(135deg, var(--accent) 0%, #6c8cff 100%);
+        }
+
+        .recommendation-box {
+            margin-top: 1rem;
+            padding: 1rem 1.1rem;
+            border-radius: 18px;
+            background: var(--card-muted-bg);
+            border: 1px solid var(--card-border);
+            color: var(--ink);
+            line-height: 1.7;
+        }
+
+        .disclaimer-box {
+            display: flex;
+            gap: 1rem;
+            align-items: flex-start;
+            color: var(--disclaimer-ink);
+            background: var(--disclaimer-bg);
+            border-radius: 18px;
+            padding: 1rem 1.1rem;
+        }
+
+        .disclaimer-icon {
+            width: 34px;
+            height: 34px;
+            flex: 0 0 auto;
+        }
+
+        .disclaimer-title {
+            color: var(--disclaimer-ink);
+            font-size: 1.35rem;
+            font-weight: 700;
+            margin-bottom: 0.7rem;
+        }
+
+        .disclaimer-copy {
+            color: var(--disclaimer-ink);
+            font-size: 1rem;
+            line-height: 1.75;
+        }
+
+        .app-footer {
+            text-align: center;
+            padding: 1.8rem 0 0.3rem;
+            color: var(--footer-ink);
+            font-size: 0.98rem;
+            line-height: 1.8;
+        }
+
+        div[data-testid="stAlert"] {
+            border-radius: 16px;
+            background: var(--card-muted-bg) !important;
+            border: 1px solid var(--card-border) !important;
+        }
+
+        div[data-testid="stAlertContainer"] {
+            background: transparent !important;
+            color: var(--ink-strong) !important;
+        }
+
+        div[data-testid^="stAlertContent"] p,
+        div[data-testid^="stAlertContent"] li,
+        div[data-testid^="stAlertContent"] span,
+        div[data-testid^="stAlertContent"] div {
+            color: var(--ink-strong) !important;
+        }
+
+        div[data-testid="stAlert"] svg {
+            color: var(--ink-strong) !important;
+            fill: var(--ink-strong) !important;
+        }
+
+        div[data-testid="stAlert"]:has([data-testid="stAlertContentSuccess"]) {
+            border-left: 4px solid #34c37b !important;
+        }
+
+        div[data-testid="stAlert"]:has([data-testid="stAlertContentWarning"]) {
+            border-left: 4px solid #d7a11d !important;
+        }
+
+        div[data-testid="stAlert"]:has([data-testid="stAlertContentError"]) {
+            border-left: 4px solid #df5b5b !important;
+        }
+
+        div[data-testid="stAlert"]:has([data-testid="stAlertContentInfo"]) {
+            border-left: 4px solid var(--accent) !important;
+        }
+
+        @media (max-width: 900px) {
+            .block-container {
+                padding-top: 0.7rem;
+            }
+
+            .hero-lockup {
+                gap: 0.6rem;
+            }
+
+            .app-hero {
+                padding: 0.05rem 0 0.85rem;
+            }
+
+            div[data-testid="stFileUploaderDropzone"] {
+                min-height: 150px;
+                padding: 0.85rem 0.95rem !important;
+                border-radius: 18px !important;
+            }
+
+            div[data-testid="stFileUploaderDropzoneInstructions"] > div {
+                font-size: 0.88rem !important;
+            }
+
+            div[data-testid="stFileUploaderDropzoneInstructions"] small {
+                font-size: 0.78rem !important;
+                line-height: 1.35 !important;
+            }
+
+            .stButton > button {
+                min-height: 40px;
+            }
+
+            .results-empty {
+                min-height: 210px;
+            }
+
+            .layout-gap {
+                height: 2rem;
+            }
+
+            .disclaimer-box {
+                flex-direction: column;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_hero() -> None:
+    st.markdown(
+        """
+        <div class="app-hero">
+            <div class="hero-lockup">
+                <div class="hero-icon">
+                    <svg viewBox="0 0 64 64" fill="none" aria-hidden="true">
+                        <path d="M5 34H18L25 15L34 49L42 28H59" stroke="currentColor" stroke-width="4.8" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </div>
+                <div class="hero-title">Skin Cancer Screening System</div>
+            </div>
+            <div class="hero-subtitle">
+                AI-assisted skin lesion analysis using DenseNet121
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_results_empty() -> None:
+    st.markdown(
+        """
+        <div class="results-empty">
+            <svg viewBox="0 0 64 64" fill="none" aria-hidden="true">
+                <path d="M7 35H19L26 16L34 50L42 29H57" stroke="currentColor" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <div class="results-empty-copy">Upload and analyze an image to see results</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_disclaimer() -> None:
+    st.markdown(
+        """
+        <div class="disclaimer-box">
+            <svg class="disclaimer-icon" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+                <circle cx="16" cy="16" r="13" stroke="currentColor" stroke-width="2.4"/>
+                <path d="M16 9V17" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
+                <circle cx="16" cy="22.5" r="1.5" fill="currentColor"/>
+            </svg>
+            <div>
+                <div class="disclaimer-title">Medical Disclaimer</div>
+                <div class="disclaimer-copy">
+                    This tool is for educational and screening purposes only. It is not a confirmed medical diagnosis.
+                    Always consult with a qualified healthcare professional for proper medical advice and diagnosis.
+                    This system is designed for close-up skin lesion images and may reject unsuitable uploads.
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_footer() -> None:
+    st.markdown(
+        """
+        <div class="app-footer">
+            Powered by DenseNet121 • PyTorch • FastAPI<br>
+            Supports: Benign | Malignant | Invalid classifications
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_sample_gallery(entries: list[dict[str, str]], source_label: str) -> dict[str, str] | None:
+    st.markdown(
+        f"""
+        <div class="sample-gallery-title">{escape(source_label)}</div>
+        <div class="sample-gallery-copy">
+            Sample preview gallery se image choose karo. Select karte hi neeche larger preview dikh jayega.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.caption("First row visible rahegi. Aur samples isi block ke andar scroll me milenge.")
+
+    selected_path = st.session_state.selected_library_path
+    selected_entry = next(
+        (entry for entry in entries if entry["path"] == selected_path),
+        None,
+    )
+
+    with st.container(height=385, border=False):
+        grid_columns = st.columns(3, gap="small")
+        for index, entry in enumerate(entries):
+            with grid_columns[index % 3]:
+                with st.container(border=True):
+                    try:
+                        st.image(
+                            load_gallery_thumbnail(entry["path"]),
+                            use_container_width=True,
+                        )
+                    except (FileNotFoundError, UnidentifiedImageError):
+                        st.warning("Preview unavailable")
+                        continue
+
+                    st.markdown(
+                        f"""
+                        <div class="sample-card-title">{escape(entry["class_label"])}</div>
+                        <div class="sample-card-meta">{escape(entry["relative_path"])}</div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                    is_selected = selected_path == entry["path"]
+                    if is_selected:
+                        st.markdown(
+                            '<div class="sample-selected-pill">Selected</div>',
+                            unsafe_allow_html=True,
+                        )
+
+                    if st.button(
+                        "Use This Sample" if not is_selected else "Selected",
+                        key=f"sample_pick_{entry['key']}",
+                        use_container_width=True,
+                        disabled=is_selected,
+                    ):
+                        st.session_state.selected_library_path = entry["path"]
+                        st.session_state.prediction_result = None
+                        st.session_state.error_message = None
+                        st.session_state.show_result = False
+                        st.session_state.scroll_to_analyze = True
+                        st.session_state.scroll_to_result = False
+                        selected_entry = entry
+                        selected_path = entry["path"]
+
+    if selected_entry is None and selected_path:
+        selected_entry = next(
+            (entry for entry in entries if entry["path"] == selected_path),
+            None,
+        )
+
+    return selected_entry
+
+
+def analyze_image(
+    image_name: str,
+    image_bytes: bytes,
+    image_mime: str,
+    backend_url: str,
+) -> None:
     st.session_state.error_message = None
     st.session_state.prediction_result = None
     st.session_state.show_result = False
 
-    scan_holder = st.empty()
-    progress_holder = st.empty()
+    status_box = st.empty()
+    progress_box = st.empty()
+
+    steps = [
+        "Preparing image payload...",
+        "Checking lesion framing and quality...",
+        "Running model inference...",
+        "Compiling risk summary...",
+    ]
 
     try:
-        scan_steps = [
-            "Initializing AI scanner...",
-            "Preprocessing uploaded lesion image...",
-            "Extracting visual patterns...",
-            "Running classification model...",
-            "Generating screening report..."
-        ]
-
-        for i, step in enumerate(scan_steps, start=1):
-            scan_holder.markdown(
-                f'<div class="scan-box"><strong>{step}</strong></div>',
-                unsafe_allow_html=True
-            )
-            progress_holder.progress(i * 18)
-            time.sleep(0.35)
-
-        files = {
-            "file": (
-                image_name,
-                image_bytes,
-                image_mime
-            )
-        }
+        for index, step in enumerate(steps, start=1):
+            status_box.info(step)
+            progress_box.progress(index * 20)
+            time.sleep(0.24)
 
         response = requests.post(
-            f"{BACKEND_URL}/predict",
-            files=files,
-            timeout=180
+            f"{backend_url}/predict",
+            files={"file": (image_name, image_bytes, image_mime)},
+            timeout=180,
         )
-
-        progress_holder.progress(100)
+        progress_box.progress(100)
 
         if response.status_code == 200:
             st.session_state.prediction_result = response.json()
             st.session_state.show_result = True
             st.session_state.scroll_to_result = True
-            scan_holder.markdown(
-                '<div class="scan-box"><strong>Analysis completed successfully.</strong></div>',
-                unsafe_allow_html=True
-            )
-        else:
-            st.session_state.prediction_result = None
-            st.session_state.error_message = f"API Error: {response.status_code}"
-            st.session_state.show_result = False
+            status_box.success("Screening report ready.")
+            return
 
+        st.session_state.error_message = f"API Error: {response.status_code}"
     except requests.exceptions.Timeout:
-        st.session_state.prediction_result = None
         st.session_state.error_message = (
-            "The backend is likely waking up from cold start. "
-            "Please wait about 30-60 seconds and click Analyze Image again."
+            "Backend response timeout hua. Free hosting par pehla request cold start ki wajah se slow ho sakta hai."
         )
-        st.session_state.show_result = False
-        st.session_state.scroll_to_result = False
-
     except requests.exceptions.ConnectionError:
-        st.session_state.prediction_result = None
         st.session_state.error_message = (
-            "Could not connect to backend. On free hosting, the backend may be asleep. "
-            "Please wait a bit and try again."
+            "Backend connect nahi hua. FastAPI server run ho ya deployed URL reachable ho, yeh verify karo."
         )
-        st.session_state.show_result = False
-        st.session_state.scroll_to_result = False
+    except Exception as exc:
+        st.session_state.error_message = f"Unexpected error: {exc}"
 
-    except Exception as e:
-        st.session_state.prediction_result = None
-        st.session_state.error_message = f"Something went wrong: {e}"
-        st.session_state.show_result = False
-        st.session_state.scroll_to_result = False
+    st.session_state.show_result = False
+    st.session_state.scroll_to_result = True
 
-st.markdown('</div>', unsafe_allow_html=True)
-st.markdown('</div>', unsafe_allow_html=True)
 
-# =========================
-# Error
-# =========================
-if st.session_state.error_message:
-    st.warning(st.session_state.error_message)
+def render_result_panel(prediction_result: dict[str, object] | None) -> None:
+    if not prediction_result:
+        render_results_empty()
+        return
 
-st.markdown('<div class="section-shell">', unsafe_allow_html=True)
-st.markdown('<div id="screening-result-anchor" class="section-anchor"></div>', unsafe_allow_html=True)
+    predicted_class = str(prediction_result["predicted_class"])
+    confidence = float(prediction_result["predicted_probability"])
+    benign_probability = float(prediction_result["benign_probability"])
+    malignant_probability = float(prediction_result["malignant_probability"])
+    invalid_probability = float(prediction_result.get("invalid_probability", 0.0))
+    risk_level = str(prediction_result["risk_level"])
+    recommendation = str(prediction_result["recommendation"])
+    is_valid_image = bool(prediction_result.get("is_valid_image", True))
+    is_uncertain = bool(prediction_result.get("is_uncertain", False))
 
-if st.session_state.show_result and st.session_state.prediction_result is not None:
-    result = st.session_state.prediction_result
-
-    predicted_class = result["predicted_class"]
-    predicted_probability = result["predicted_probability"]
-    benign_prob = result["benign_probability"]
-    malignant_prob = result["malignant_probability"]
-    invalid_prob = result.get("invalid_probability", 0.0)
-    risk_level = result["risk_level"]
-    recommendation = result["recommendation"]
-    is_valid_image = result.get("is_valid_image", True)
-    is_uncertain = result.get("is_uncertain", False)
-
-    risk_color = get_risk_color(risk_level)
-    badge_bg = {
-        "Low Risk": "rgba(34,197,94,0.16)",
-        "Suspicious": "rgba(245,158,11,0.16)",
-        "High Risk": "rgba(239,68,68,0.16)",
-        "Invalid Image": "rgba(148,163,184,0.16)",
-    }.get(risk_level, "rgba(148,163,184,0.16)")
-
-    st.markdown('<div class="section-heading">Screening Result</div>', unsafe_allow_html=True)
+    risk_color, risk_background = get_risk_style(risk_level)
 
     st.markdown(
         f"""
         <div class="result-card">
-            <div class="result-title">{predicted_class}</div>
-            <div class="section-subtext" style="text-align:left; margin-bottom:1.2rem;">AI-generated screening summary based on the uploaded lesion image.</div>
-            <div class="result-line">
-                <strong>Prediction Confidence:</strong> {format_percent(predicted_probability)}
+            <div class="status-pill" style="color:{risk_color}; background:{risk_background}; border:1px solid {risk_color};">
+                {escape(risk_level)}
             </div>
-            <div class="result-line">
-                <strong>Risk Level:</strong>
-                <span class="risk-badge" style="background:{badge_bg}; color:{risk_color}; border:1px solid {risk_color};">
-                    {risk_level}
-                </span>
-            </div>
-            <div class="result-line" style="margin-top:1rem;">
-                <strong>Recommendation:</strong> {recommendation}
+            <div class="result-headline">{escape(predicted_class)}</div>
+            <div class="result-copy">
+                Confidence {escape(format_percent(confidence))}. {escape(recommendation)}
             </div>
         </div>
         """,
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
+
+    metric_columns = st.columns(3, gap="large")
+    with metric_columns[0]:
+        render_metric_card(
+            "Benign Probability",
+            format_percent(benign_probability),
+            "Lower values are expected when malignant or invalid evidence dominates.",
+        )
+        st.progress(benign_probability)
+    with metric_columns[1]:
+        render_metric_card(
+            "Malignant Probability",
+            format_percent(malignant_probability),
+            "This drives the risk flag when the threshold is crossed.",
+        )
+        st.progress(malignant_probability)
+    with metric_columns[2]:
+        render_metric_card(
+            "Invalid Probability",
+            format_percent(invalid_probability),
+            "High values usually mean the upload is not a lesion-focused close-up.",
+        )
+        st.progress(invalid_probability)
 
     if not is_valid_image:
-        st.warning("This upload does not look like a valid close-up skin lesion image. Try a clearer lesion-focused photo.")
+        st.warning(
+            "Image lesion-focused nahi lag rahi. Close-up dermoscopic ya lesion-centered image upload karna better rahega."
+        )
 
     if is_uncertain:
-        st.info("The model is uncertain about this image. Consider uploading a sharper, closer lesion photo.")
-
-    st.markdown('<div class="section-heading" style="font-size:1.8rem;">Detailed Probabilities</div>', unsafe_allow_html=True)
-
-    if is_valid_image and invalid_prob <= 0:
-        prob_col1, prob_col2 = st.columns(2, gap="large")
-
-        with prob_col1:
-            st.markdown(
-                f"""
-                <div class="mini-card">
-                    <div class="mini-label">Benign Probability</div>
-                    <div class="mini-value">{format_percent(benign_prob)}</div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-            st.progress(float(benign_prob))
-            st.markdown(f'<div class="progress-label">Confidence share: {format_percent(benign_prob)}</div>', unsafe_allow_html=True)
-
-        with prob_col2:
-            st.markdown(
-                f"""
-                <div class="mini-card">
-                    <div class="mini-label">Malignant Probability</div>
-                    <div class="mini-value">{format_percent(malignant_prob)}</div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-            st.progress(float(malignant_prob))
-            st.markdown(f'<div class="progress-label">Confidence share: {format_percent(malignant_prob)}</div>', unsafe_allow_html=True)
-    else:
-        prob_col1, prob_col2, prob_col3 = st.columns(3, gap="large")
-
-        with prob_col1:
-            st.markdown(
-                f"""
-                <div class="mini-card">
-                    <div class="mini-label">Benign Probability</div>
-                    <div class="mini-value">{format_percent(benign_prob)}</div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-            st.progress(float(benign_prob))
-
-        with prob_col2:
-            st.markdown(
-                f"""
-                <div class="mini-card">
-                    <div class="mini-label">Malignant Probability</div>
-                    <div class="mini-value">{format_percent(malignant_prob)}</div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-            st.progress(float(malignant_prob))
-
-        with prob_col3:
-            st.markdown(
-                f"""
-                <div class="mini-card">
-                    <div class="mini-label">Invalid Probability</div>
-                    <div class="mini-value">{format_percent(invalid_prob)}</div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-            st.progress(float(invalid_prob))
-
-    # Technical Output always visible
-    result_text = f"""===== Prediction Result =====
-
-Benign Probability: {benign_prob:.4f}
-Malignant Probability: {malignant_prob:.4f}
-Invalid Probability: {invalid_prob:.4f}
-Predicted Class: {predicted_class.lower()}
-Risk Level: {risk_level}
-Valid Image: {is_valid_image}
-Uncertain: {is_uncertain}
-
-Recommendation: {recommendation}"""
+        st.info(
+            "Model uncertain hai. Clearer crop, sharper focus, aur closer lesion framing se result better ho sakta hai."
+        )
 
     st.markdown(
         f"""
-        <div class="tech-card">
-            <div class="tech-inner">
-                <div class="tech-title">Technical Output</div>
-                <div class="tech-code">{result_text}</div>
-            </div>
+        <div class="recommendation-box">
+            <strong>Recommendation:</strong> {escape(recommendation)}
         </div>
         """,
-        unsafe_allow_html=True
-    )
-else:
-    st.markdown('<div class="section-heading">Screening Result</div>', unsafe_allow_html=True)
-    st.markdown(
-        """
-        <div class="result-card">
-            <div class="result-line" style="margin-bottom:0;">
-                Your AI screening summary will appear here after you upload an image and run the analysis.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
-st.markdown('</div>', unsafe_allow_html=True)
 
-if st.session_state.show_result and st.session_state.scroll_to_result:
-    components.html(
-        """
-        <script>
-        const scrollToResult = () => {
-            const anchor = window.parent.document.getElementById("screening-result-anchor");
-            if (anchor) {
-                anchor.scrollIntoView({ behavior: "smooth", block: "start" });
-            }
-        };
-        window.parent.requestAnimationFrame(scrollToResult);
-        </script>
-        """,
-        height=0
+def main() -> None:
+    st.set_page_config(
+        page_title="Skin Cancer Screening",
+        page_icon=":microscope:",
+        layout="wide",
     )
-    st.session_state.scroll_to_result = False
 
-# =========================
-# Footer
-# =========================
-st.markdown(
-    """
-    <div class="footer-note">
-        Built for AI-assisted skin lesion screening research and demonstration.
-        <br><br>
-        <strong>*</strong> This tool is for educational and screening purposes only. It is not a confirmed medical diagnosis.
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+    init_session_state()
+    inject_styles()
+
+    backend_url = resolve_backend_url()
+
+    render_hero()
+
+    sample_entries: list[dict[str, str]] = []
+    sample_error = ""
+    try:
+        sample_root = resolve_library_root(("bundled", "", "", "", "", ""))
+        sample_entries = build_library_index(sample_root["root"])
+        if not sample_entries:
+            sample_error = "`sample_images/` folder me supported image files nahi mili."
+    except Exception as exc:
+        sample_error = str(exc)
+
+    selected_image = None
+    image_name = ""
+    image_bytes = b""
+    image_mime = "image/jpeg"
+    preview_meta = ""
+    run_scan = False
+
+    center_column = st.columns([1.1, 4.8, 1.1], gap="large")[1]
+
+    with center_column:
+        with st.container(border=True):
+            st.markdown(
+                """
+                <div class="upload-section-intro">
+                    <div class="section-card-title">Upload Section</div>
+                    <div class="section-card-copy">
+                        Upload a lesion image, ya bundled sample gallery me se ek image choose karo.
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            source_mode = st.radio(
+                "Input Source",
+                options=["Upload Image", "Sample Images"],
+                horizontal=True,
+                label_visibility="collapsed",
+            )
+
+            uploaded_file = None
+            selected_entry = None
+
+            if source_mode == "Upload Image":
+                uploaded_file = st.file_uploader(
+                    "Upload your image",
+                    type=["jpg", "jpeg", "png", "webp"],
+                    key=f"uploader_{st.session_state.uploader_key}",
+                    label_visibility="collapsed",
+                )
+                st.caption("PNG, JPG, JPEG, WEBP up to 10MB")
+                track_uploaded_file(uploaded_file)
+
+                if uploaded_file is not None:
+                    image_bytes = uploaded_file.getvalue()
+                    image_name = uploaded_file.name
+                    image_mime = uploaded_file.type or image_mime
+                    try:
+                        selected_image = Image.open(BytesIO(image_bytes)).convert("RGB")
+                        preview_meta = image_name
+                    except UnidentifiedImageError:
+                        st.session_state.error_message = "Uploaded image open nahi hui. Valid image file choose karo."
+                        selected_image = None
+                        st.session_state.scroll_to_analyze = False
+                        image_bytes = b""
+            else:
+                track_uploaded_file(None)
+                if sample_error:
+                    st.warning(sample_error)
+                else:
+                    selected_entry = render_sample_gallery(
+                        sample_entries,
+                        "Sample Images",
+                    )
+
+                if selected_entry is not None:
+                    try:
+                        image_bytes = read_gallery_image_bytes(selected_entry["path"])
+                        image_name = selected_entry["filename"]
+                        selected_image = load_gallery_image(selected_entry["path"])
+                        preview_meta = (
+                            f"{selected_entry['class_label']} • {selected_entry['split_label']} • "
+                            f"{selected_entry['relative_path']}"
+                        )
+                    except (FileNotFoundError, UnidentifiedImageError):
+                        st.session_state.selected_library_path = ""
+                        st.session_state.scroll_to_analyze = False
+                        st.warning("Selected sample image load nahi hui. Dusri image choose karo.")
+
+            if selected_image is not None:
+                st.markdown('<div id="analyze-anchor"></div>', unsafe_allow_html=True)
+                st.markdown(
+                    '<div class="selected-preview-title">Selected Preview</div>',
+                    unsafe_allow_html=True,
+                )
+                preview_columns = st.columns([1.45, 2.7, 1.45])
+                with preview_columns[1]:
+                    st.image(selected_image, use_container_width=True)
+                    if preview_meta:
+                        st.markdown(
+                            f'<div class="preview-meta">{escape(preview_meta)}</div>',
+                            unsafe_allow_html=True,
+                        )
+
+            button_columns = st.columns(2, gap="small")
+            with button_columns[0]:
+                run_scan = st.button(
+                    "Analyze Image",
+                    type="primary",
+                    disabled=selected_image is None or not image_bytes,
+                    use_container_width=True,
+                )
+            with button_columns[1]:
+                if st.button(
+                    "Reset",
+                    type="secondary",
+                    use_container_width=True,
+                ):
+                    reset_workspace()
+                    st.rerun()
+
+            st.caption("First request may take a little longer while the backend wakes up.")
+
+            if run_scan and image_bytes:
+                st.session_state.scroll_to_analyze = False
+                analyze_image(image_name, image_bytes, image_mime, backend_url)
+
+            if st.session_state.scroll_to_analyze and selected_image is not None:
+                scroll_to_anchor("analyze-anchor")
+                st.session_state.scroll_to_analyze = False
+
+        st.markdown('<div class="layout-gap"></div>', unsafe_allow_html=True)
+        st.markdown('<div id="analysis-results-anchor"></div>', unsafe_allow_html=True)
+
+        with st.container(border=True):
+            st.markdown(
+                """
+                <div class="panel-title">Analysis Results</div>
+                <div class="panel-copy">
+                    Result yahan center me render hoga. Analyze complete hote hi page automatically yahan scroll karega.
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if st.session_state.error_message:
+                st.warning(st.session_state.error_message)
+            render_result_panel(st.session_state.prediction_result)
+
+        if st.session_state.scroll_to_result:
+            scroll_to_anchor("analysis-results-anchor")
+            st.session_state.scroll_to_result = False
+
+        st.markdown('<div class="layout-gap"></div>', unsafe_allow_html=True)
+
+        with st.container(border=True):
+            render_disclaimer()
+
+        render_footer()
+
+
+if __name__ == "__main__":
+    main()
