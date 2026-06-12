@@ -189,7 +189,7 @@ def download_google_drive_file(source_value: str, destination: Path) -> None:
     file_id = extract_drive_file_id(source_value)
     if not file_id:
         raise RuntimeError(
-            "Google Drive file id detect nahi hua. Public share link ya file id set karo."
+            "Google Drive file ID was not detected. Use a public share link or file ID."
         )
 
     session = requests.Session()
@@ -218,7 +218,7 @@ def download_google_drive_file(source_value: str, destination: Path) -> None:
     if "text/html" in content_type and ".zip" not in content_disposition:
         response.close()
         raise RuntimeError(
-            "Google Drive se zip download nahi hui. File ko 'Anyone with the link' access do."
+            "The Google Drive zip could not be downloaded. Set file access to 'Anyone with the link'."
         )
 
     stream_to_file(response, destination)
@@ -235,7 +235,7 @@ def download_remote_file(source_url: str, destination: Path) -> None:
 def ensure_archive_is_zip(archive_path: Path) -> None:
     if not zipfile.is_zipfile(archive_path):
         raise RuntimeError(
-            "Configured dataset archive zip format me nahi hai. Google Drive par zip upload karo."
+            "The configured dataset archive is not a zip file. Upload a zip archive to Google Drive."
         )
 
 
@@ -310,14 +310,14 @@ def prepare_drive_folder_library(
         folder_url = f"https://drive.google.com/drive/folders/{folder_id}"
     else:
         raise RuntimeError(
-            "Google Drive folder id detect nahi hua. Public folder link ya folder id set karo."
+            "Google Drive folder ID was not detected. Use a public folder link or folder ID."
         )
 
     try:
         import gdown
     except ImportError as exc:
         raise RuntimeError(
-            "Google Drive folder support ke liye `gdown` install hona chahiye."
+            "`gdown` must be installed to load a Google Drive folder."
         ) from exc
 
     download_kwargs = {
@@ -339,7 +339,7 @@ def prepare_drive_folder_library(
 
     if not folder_items:
         raise RuntimeError(
-            "Google Drive folder se files load nahi hui. Folder ko 'Anyone with the link' access do."
+            "No files were loaded from the Google Drive folder. Set folder access to 'Anyone with the link'."
         )
 
     skipped_files: list[str] = []
@@ -366,13 +366,13 @@ def prepare_drive_folder_library(
     image_count = count_supported_images(extract_root)
     if image_count == 0:
         raise RuntimeError(
-            "Google Drive folder se image files load nahi hui. Folder ko 'Anyone with the link' access do ya dataset zip/local folder use karo."
+            "No image files were loaded from the Google Drive folder. Check sharing access or use a dataset zip/local folder."
         )
 
     if skipped_files:
         warning = (
-            f"Google Drive folder partially load hua. {len(skipped_files)} file(s) access nahi hui, "
-            "isliye abhi available images hi dikhayi ja rahi hain."
+            f"Google Drive folder loaded partially. {len(skipped_files)} file(s) could not be accessed. "
+            "Only available images are shown."
         )
         partial_marker.write_text(warning, encoding="utf-8")
         return {"root": str(extract_root.resolve()), "warning": warning}
@@ -391,7 +391,7 @@ def resolve_library_root(config: tuple[str, str, str, str, str, str]) -> dict[st
         dataset_root = Path(directory).expanduser()
         if not dataset_root.exists():
             raise FileNotFoundError(
-                f"Configured dataset folder nahi mila: {dataset_root}"
+                f"Configured dataset folder was not found: {dataset_root}"
             )
         return {"root": str(dataset_root.resolve()), "mode": mode}
 
@@ -415,7 +415,7 @@ def resolve_library_root(config: tuple[str, str, str, str, str, str]) -> dict[st
     dataset_root = DEFAULT_LIBRARY_ROOT
     if not dataset_root.exists():
         raise FileNotFoundError(
-            "Bundled image library missing hai. `sample_images/` ya external dataset configure karo."
+            "Bundled image library is missing. Add `sample_images/` or configure an external dataset."
         )
     return {"root": str(dataset_root.resolve()), "mode": mode}
 
@@ -1268,7 +1268,7 @@ def render_footer() -> None:
     st.markdown(
         """
         <div class="app-footer">
-            Powered by DenseNet121 • PyTorch • FastAPI<br>
+            Powered by DenseNet121 | PyTorch | FastAPI<br>
             Supports: Benign | Malignant | Invalid classifications
         </div>
         """,
@@ -1281,12 +1281,12 @@ def render_sample_gallery(entries: list[dict[str, str]], source_label: str) -> d
         f"""
         <div class="sample-gallery-title">{escape(source_label)}</div>
         <div class="sample-gallery-copy">
-            Sample preview gallery se image choose karo. Select karte hi neeche larger preview dikh jayega.
+            Choose a sample image to preview it below.
         </div>
         """,
         unsafe_allow_html=True,
     )
-    st.caption("First row visible rahegi. Aur samples isi block ke andar scroll me milenge.")
+    st.caption("Scroll inside this panel to view more samples.")
 
     selected_path = st.session_state.selected_library_path
     selected_entry = next(
@@ -1390,11 +1390,11 @@ def analyze_image(
         st.session_state.error_message = f"API Error: {response.status_code}"
     except requests.exceptions.Timeout:
         st.session_state.error_message = (
-            "Backend response timeout hua. Free hosting par pehla request cold start ki wajah se slow ho sakta hai."
+            "Backend response timed out. On free hosting, the first request can be slow while the service starts."
         )
     except requests.exceptions.ConnectionError:
         st.session_state.error_message = (
-            "Backend connect nahi hua. FastAPI server run ho ya deployed URL reachable ho, yeh verify karo."
+            "Could not connect to the backend. Verify that the FastAPI server is running or the deployed URL is reachable."
         )
     except Exception as exc:
         st.session_state.error_message = f"Unexpected error: {exc}"
@@ -1460,12 +1460,12 @@ def render_result_panel(prediction_result: dict[str, object] | None) -> None:
 
     if not is_valid_image:
         st.warning(
-            "Image lesion-focused nahi lag rahi. Close-up dermoscopic ya lesion-centered image upload karna better rahega."
+            "This image does not appear lesion-focused. Use a clear close-up or dermoscopic lesion image."
         )
 
     if is_uncertain:
         st.info(
-            "Model uncertain hai. Clearer crop, sharper focus, aur closer lesion framing se result better ho sakta hai."
+            "The model is uncertain. A sharper, closer lesion crop may improve the result."
         )
 
     st.markdown(
@@ -1498,7 +1498,7 @@ def main() -> None:
         sample_root = resolve_library_root(("bundled", "", "", "", "", ""))
         sample_entries = build_library_index(sample_root["root"])
         if not sample_entries:
-            sample_error = "`sample_images/` folder me supported image files nahi mili."
+            sample_error = "No supported image files were found in `sample_images/`."
     except Exception as exc:
         sample_error = str(exc)
 
@@ -1518,7 +1518,7 @@ def main() -> None:
                 <div class="upload-section-intro">
                     <div class="section-card-title">Upload Section</div>
                     <div class="section-card-copy">
-                        Upload a lesion image, ya bundled sample gallery me se ek image choose karo.
+                        Upload a lesion image or choose a bundled sample.
                     </div>
                 </div>
                 """,
@@ -1553,7 +1553,7 @@ def main() -> None:
                         selected_image = Image.open(BytesIO(image_bytes)).convert("RGB")
                         preview_meta = image_name
                     except UnidentifiedImageError:
-                        st.session_state.error_message = "Uploaded image open nahi hui. Valid image file choose karo."
+                        st.session_state.error_message = "The uploaded file could not be opened. Choose a valid image file."
                         selected_image = None
                         st.session_state.scroll_to_analyze = False
                         image_bytes = b""
@@ -1573,13 +1573,13 @@ def main() -> None:
                         image_name = selected_entry["filename"]
                         selected_image = load_gallery_image(selected_entry["path"])
                         preview_meta = (
-                            f"{selected_entry['class_label']} • {selected_entry['split_label']} • "
+                            f"{selected_entry['class_label']} | {selected_entry['split_label']} | "
                             f"{selected_entry['relative_path']}"
                         )
                     except (FileNotFoundError, UnidentifiedImageError):
                         st.session_state.selected_library_path = ""
                         st.session_state.scroll_to_analyze = False
-                        st.warning("Selected sample image load nahi hui. Dusri image choose karo.")
+                        st.warning("The selected sample could not be loaded. Choose another image.")
 
             if selected_image is not None:
                 st.markdown('<div id="analyze-anchor"></div>', unsafe_allow_html=True)
@@ -1631,7 +1631,7 @@ def main() -> None:
                 """
                 <div class="panel-title">Analysis Results</div>
                 <div class="panel-copy">
-                    Result yahan center me render hoga. Analyze complete hote hi page automatically yahan scroll karega.
+                    Results appear here after analysis. The first backend response may take longer on free hosting.
                 </div>
                 """,
                 unsafe_allow_html=True,
